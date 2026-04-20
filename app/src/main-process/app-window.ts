@@ -38,6 +38,7 @@ export class AppWindow {
   private _rendererReadyTime: number | null = null
   private isDownloadingUpdate: boolean = false
   private hasRecoveredFromCrash = false
+  private shouldActivateOnShow: boolean
 
   private minWidth = 960
   private minHeight = 660
@@ -45,7 +46,7 @@ export class AppWindow {
   // See https://github.com/desktop/desktop/pull/11162
   private shouldMaximizeOnShow = false
 
-  public constructor() {
+  public constructor(shouldActivateOnShow: boolean = true) {
     const savedWindowState = windowStateKeeper({
       defaultWidth: this.minWidth,
       defaultHeight: this.minHeight,
@@ -89,6 +90,7 @@ export class AppWindow {
 
     savedWindowState.manage(this.window)
     this.shouldMaximizeOnShow = savedWindowState.isMaximized
+    this.shouldActivateOnShow = shouldActivateOnShow
 
     let quitting = false
     let quittingEvenIfUpdating = false
@@ -355,8 +357,12 @@ export class AppWindow {
   }
 
   /** Show the window. */
-  public show() {
-    this.window.show()
+  public show(activateWindow: boolean = true) {
+    if (activateWindow && this.shouldActivateOnShow) {
+      this.window.show()
+    } else {
+      this.window.showInactive()
+    }
 
     if (this.shouldMaximizeOnShow) {
       // Only maximize the window the first time it's shown, not every time.

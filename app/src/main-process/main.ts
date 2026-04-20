@@ -1,5 +1,7 @@
 import '../lib/logging/main/install'
 
+import { spawn } from 'child_process'
+
 import {
   app,
   Menu,
@@ -66,6 +68,8 @@ import {
 
 const shouldEnableDevToolsExtensions =
   process.env.GITHUB_DESKTOP_INSTALL_DEVTOOLS?.toLowerCase() === '1'
+
+const isSecondaryTrayInstance = process.argv.includes('--secondary-desktop-instance')
 
 if (__DEV__ && !shouldEnableDevToolsExtensions) {
   // Keep the main process predictable in the fork when running with multiple
@@ -189,7 +193,7 @@ function createAppTray() {
     }
     const isMiddleButton = clickEvent.button === 1
     if (isMiddleButton) {
-      createWindow()
+      launchAdditionalInstanceFromTray()
       return
     }
 
@@ -206,9 +210,34 @@ function createAppTray() {
       button?: number
     }
     if (clickEvent.button === 1) {
-      createWindow()
+      launchAdditionalInstanceFromTray()
     }
   })
+}
+
+function launchAdditionalInstanceFromTray() {
+  if (!__WIN32__) {
+    createWindow({ shouldActivate: false })
+    return
+  }
+
+  const executablePath = getDevelopmentBuildExecutablePath()
+  if (!executablePath) {
+    createWindow({ shouldActivate: false })
+    return
+  }
+
+  const child = spawn(executablePath, ['--secondary-desktop-instance'], {
+    detached: true,
+    stdio: 'ignore',
+  })
+
+  if (child.pid === undefined) {
+    createWindow({ shouldActivate: false })
+    return
+  }
+
+  child.unref()
 }
 
 function destroyAppTray() {
@@ -353,7 +382,11 @@ let isDuplicateInstance = false
 // If we're handling a Squirrel event we don't want to enforce single instance.
 // We want to let the updated instance launch and do its work. It will then quit
 // once it's done.
-if (!handlingSquirrelEvent && startupPolicy.enforceSingleInstance) {
+if (
+  !handlingSquirrelEvent &&
+  startupPolicy.enforceSingleInstance &&
+  !isSecondaryTrayInstance
+) {
   const gotSingleInstanceLock = app.requestSingleInstanceLock()
   isDuplicateInstance = !gotSingleInstanceLock
 
@@ -713,7 +746,9 @@ app.on('ready', () => {
   }
 
   createWindow()
-  createAppTray()
+  if (!isSecondaryTrayInstance) {
+    createAppTray()
+  }
 
   const orderedWebRequest = new OrderedWebRequest(
     session.defaultSession.webRequest
@@ -1151,8 +1186,8 @@ app.on(
   }
 )
 
-function createWindow() {
-  const window = new AppWindow()
+function createWindow(options: { shouldActivate?: boolean } = {}) {
+  const window = new AppWindow(options.shouldActivate ?? true)
   installDevToolsExtensions()
 
   window.onClosed(() => {
@@ -1169,7 +1204,7 @@ function createWindow() {
   })
 
   window.onDidLoad(() => {
-    window.show()
+    window.show(options.shouldActivate ?? true)
     window.sendLaunchTimingStats({
       mainReadyTime: readyTime!,
       loadTime: window.loadTime!,
