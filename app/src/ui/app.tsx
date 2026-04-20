@@ -50,7 +50,6 @@ import { DeleteBranch, DeleteRemoteBranch } from './delete-branch'
 import { CloningRepositoryView } from './cloning-repository'
 import {
   Toolbar,
-  ToolbarButton,
   ToolbarDropdown,
   DropdownState,
   PushPullButton,
@@ -3329,24 +3328,6 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
   }
 
-  private renderNewWindowToolbarButton(): JSX.Element | null {
-    if (!__DEV__) {
-      return null
-    }
-
-    const tooltip = __DARWIN__ ? 'New Window' : 'New window'
-
-    return (
-      <ToolbarButton
-        className="new-window-toolbar-button"
-        icon={octicons.plus}
-        tooltip={tooltip}
-        ariaLabel={tooltip}
-        onClick={this.openNewWindow}
-      />
-    )
-  }
-
   private renderRepositoryToolbarButton() {
     const selection = this.state.selectedState
 
@@ -3776,7 +3757,6 @@ export class App extends React.Component<IAppProps, IAppState> {
     return (
       <Toolbar id="desktop-app-toolbar">
         <div className="sidebar-section" style={{ width }}>
-          {this.renderNewWindowToolbarButton()}
           {this.renderRepositoryToolbarButton()}
         </div>
         {this.renderWorktreeToolbarButton()}
