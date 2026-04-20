@@ -4,12 +4,15 @@ import {
   app,
   Menu,
   BrowserWindow,
+  Tray,
+  nativeImage,
   shell,
   session,
   systemPreferences,
   nativeTheme,
 } from 'electron'
 import * as Fs from 'fs'
+import * as Path from 'path'
 
 import { AppWindow } from './app-window'
 import { buildDefaultMenu, getAllMenuItems } from './menu'
@@ -51,20 +54,190 @@ import {
 import { initializeDesktopNotifications } from './notifications'
 import parseCommandLineArgs from 'minimist'
 import { CLIAction } from '../lib/cli-action'
+import {
+  DevelopmentOAuthCallbackProtocol,
+  getStartupPolicy,
+} from './startup-policy'
+import {
+  createOAuthCallbackRelayPayload,
+  getOAuthCallbackRelayPath,
+  isOAuthAction,
+} from '../lib/oauth-callback-relay'
+
+const shouldEnableDevToolsExtensions =
+  process.env.GITHUB_DESKTOP_INSTALL_DEVTOOLS?.toLowerCase() === '1'
+
+if (__DEV__ && !shouldEnableDevToolsExtensions) {
+  // Keep the main process predictable in the fork when running with multiple
+  // windows. Extensions like Axe devtools have been a source of startup/render
+  // instability and can surface as blank white windows in newer Electron builds.
+  app.commandLine.appendSwitch('disable-extensions')
+}
 
 app.setAppLogsPath()
 enableSourceMaps()
 
 let mainWindow: AppWindow | null = null
+const appWindows = new Map<number, AppWindow>()
 
 const launchTime = now()
 
 let preventQuit = false
 let readyTime: number | null = null
+let shouldCreateInitialWindow = true
+let appTray: Electron.Tray | null = null
+let didInstallDevTools = false
 
 type OnDidLoadFn = (window: AppWindow) => void
 /** See the `onDidLoad` function. */
 let onDidLoadFns: Array<OnDidLoadFn> | null = []
+
+function installDevToolsExtensions() {
+  const installDevTools =
+    process.env.GITHUB_DESKTOP_INSTALL_DEVTOOLS?.toLowerCase() === '1'
+
+  if (!__DEV__ || !installDevTools || didInstallDevTools) {
+    return
+  }
+
+  const {
+    default: installExtension,
+    REACT_DEVELOPER_TOOLS,
+  } = require('electron-devtools-installer')
+
+  const axeDevTools = {
+    id: 'lhdoppojpmngadmnindnejefpokejbdd',
+  }
+
+  const extensions = [REACT_DEVELOPER_TOOLS, axeDevTools]
+
+  didInstallDevTools = true
+
+  try {
+    void installExtension(extensions, {
+      loadExtensionOptions: { allowFileAccess: true },
+    })
+    console.log('Added Extensions: "React Developer Tools", "axe DevTools"')
+  } catch (e) {
+    console.log('An error occurred while loading extensions: ', e)
+    didInstallDevTools = false
+  }
+}
+
+function resolveTrayIcon(): Electron.NativeImage | null {
+  const candidatePaths = [
+    Path.join(__dirname, 'static', 'windows-logo-64x64@2x.png'),
+    Path.join(__dirname, '..', 'static', 'windows-logo-64x64@2x.png'),
+    Path.join(process.cwd(), 'dist', 'GitHubDesktop-dev-win32-x64', 'resources', 'app', 'static', 'windows-logo-64x64@2x.png'),
+  ]
+
+  for (const candidate of candidatePaths) {
+    const image = nativeImage.createFromPath(candidate)
+    if (!image.isEmpty()) {
+      return image
+    }
+  }
+
+  return null
+}
+
+function showWindowInForeground() {
+  const window = mainWindow ?? appWindows.values().next().value ?? null
+  if (window) {
+    if (window.isMinimized()) {
+      window.restore()
+    }
+
+    window.show()
+    window.focus()
+    return
+  }
+
+  createWindow()
+}
+
+function createAppTray() {
+  if (appTray !== null) {
+    return
+  }
+
+  const trayIcon = resolveTrayIcon()
+  if (trayIcon === null) {
+    log.warn(`Unable to resolve tray icon; skipping tray setup`)
+    return
+  }
+
+  appTray = new Tray(trayIcon)
+  appTray.setToolTip('GitHub Desktop (Development)')
+  appTray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: 'New window',
+        click: () => {
+          createWindow()
+        },
+      },
+      {
+        role: 'quit',
+      },
+    ])
+  )
+
+  appTray.on('click', event => {
+    const clickEvent = event as {
+      button?: number
+    }
+    const isMiddleButton = clickEvent.button === 1
+    if (isMiddleButton) {
+      createWindow()
+      return
+    }
+
+    if (mainWindow === null && appWindows.size === 0) {
+      createWindow()
+      return
+    }
+
+    showWindowInForeground()
+  })
+
+  appTray.on('mouse-up', event => {
+    const clickEvent = event as {
+      button?: number
+    }
+    if (clickEvent.button === 1) {
+      createWindow()
+    }
+  })
+}
+
+function destroyAppTray() {
+  if (appTray === null) {
+    return
+  }
+
+  appTray.destroy()
+  appTray = null
+}
+
+function getWindowFromEvent(
+  event?: Pick<Electron.IpcMainEvent | Electron.IpcMainInvokeEvent, 'sender'>
+): AppWindow | null {
+  if (!event) {
+    return mainWindow
+  }
+
+  const senderWindow = BrowserWindow.fromWebContents(event.sender)
+  if (!senderWindow) {
+    return mainWindow
+  }
+
+  return appWindows.get(senderWindow.id) ?? mainWindow
+}
+
+function broadcastAppMenu() {
+  appWindows.forEach(window => window.sendAppMenu())
+}
 
 function handleUncaughtException(error: Error) {
   preventQuit = true
@@ -75,10 +248,11 @@ function handleUncaughtException(error: Error) {
   // exception on shutdown but that's less likely and since
   // this only affects the presentation of the crash dialog
   // it's a safe assumption to make.
-  const isLaunchError = mainWindow === null
+  const isLaunchError = appWindows.size === 0
 
-  if (mainWindow) {
-    mainWindow.destroy()
+  if (appWindows.size > 0) {
+    appWindows.forEach(window => window.destroy())
+    appWindows.clear()
     mainWindow = null
   }
 
@@ -115,10 +289,13 @@ if (__DARWIN__) {
   possibleProtocols.add('github-windows')
 }
 
-// On Windows, in order to get notifications properly working for dev builds,
-// we'll want to set the right App User Model ID from production builds.
-if (__WIN32__ && __DEV__) {
-  app.setAppUserModelId('com.squirrel.GitHubDesktop.GitHubDesktop')
+const startupPolicy = getStartupPolicy({
+  isDevelopmentBuild: __DEV__,
+  isWindows: __WIN32__,
+})
+
+if (startupPolicy.windowsAppUserModelId !== null) {
+  app.setAppUserModelId(startupPolicy.windowsAppUserModelId)
 }
 
 app.on('window-all-closed', () => {
@@ -151,7 +328,7 @@ if (__WIN32__ && process.argv.length > 1) {
 }
 
 if (!handlingSquirrelEvent) {
-  handleCommandLineArguments(process.argv)
+  void handleCommandLineArguments(process.argv)
 }
 
 initializeDesktopNotifications()
@@ -159,6 +336,11 @@ initializeDesktopNotifications()
 function handleAppURL(url: string) {
   log.info('Processing protocol url')
   const action = parseAppURL(url)
+
+  if (startupPolicy.registerDevelopmentAuthProtocolOnly && isOAuthAction(action)) {
+    void relayOAuthCallbackAction(action)
+  }
+
   onDidLoad(window => {
     // This manual focus call _shouldn't_ be necessary, but is for Chrome on
     // macOS. See https://github.com/desktop/desktop/issues/973.
@@ -171,25 +353,34 @@ let isDuplicateInstance = false
 // If we're handling a Squirrel event we don't want to enforce single instance.
 // We want to let the updated instance launch and do its work. It will then quit
 // once it's done.
-if (!handlingSquirrelEvent) {
+if (!handlingSquirrelEvent && startupPolicy.enforceSingleInstance) {
   const gotSingleInstanceLock = app.requestSingleInstanceLock()
   isDuplicateInstance = !gotSingleInstanceLock
 
-  app.on('second-instance', (event, args, workingDirectory) => {
-    // Someone tried to run a second instance, we should focus our window.
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore()
-      }
-
-      if (!mainWindow.isVisible()) {
-        mainWindow.show()
-      }
-
-      mainWindow.focus()
+  app.on('second-instance', async (_event, args, _workingDirectory) => {
+    const protocolLaunchWillRelay = await shouldHandleOAuthRelay(args)
+    if (protocolLaunchWillRelay) {
+      await handleCommandLineArguments(args)
+      return
     }
 
-    handleCommandLineArguments(args)
+    // Someone tried to run a second instance, we should focus our window and
+    // open a new one.
+    const window = mainWindow ?? appWindows.values().next().value ?? null
+    if (window) {
+      if (window?.isMinimized()) {
+        window.restore()
+      }
+
+      if (window && !window.isVisible()) {
+        window.show()
+      }
+
+      window?.focus()
+    }
+
+    createWindow()
+    void handleCommandLineArguments(args)
   })
 
   if (isDuplicateInstance) {
@@ -235,7 +426,89 @@ if (__DARWIN__) {
   })
 }
 
-async function handleCommandLineArguments(argv: string[]) {
+function getProtocolURLFromCommandLine(argv: string[]) {
+  if (!__WIN32__) {
+    return null
+  }
+
+  // Desktop registers it's protocol handler callback on Windows as
+  // `[executable path] --protocol-launcher "%1"`. Note that extra command
+  // line arguments might be added by Chromium
+  // (https://electronjs.org/docs/api/app#event-second-instance).
+  if (!argv.some(arg => arg === `${protocolLauncherArg}` || arg === '--protocol-launcher')) {
+    return null
+  }
+
+  const prefixes = Array.from(possibleProtocols, p => `${p}://`)
+  let matchingUrl: string | null = null
+  argv.some(arg => {
+    const possibleValues = [arg]
+    try {
+      possibleValues.push(decodeURIComponent(arg))
+    } catch {
+      // Ignore malformed URI sequences.
+    }
+
+    const found = possibleValues.some(candidate => {
+      if (!prefixes.some(p => candidate.startsWith(p))) {
+        return false
+      }
+
+      try {
+        new URL(candidate)
+        matchingUrl = candidate
+        return true
+      } catch (e) {
+        log.error(`Unable to parse argument as URL: ${candidate}`)
+        return false
+      }
+    })
+
+    return found
+  })
+
+  return matchingUrl
+}
+
+function removeLoadedExtensions() {
+  if (!__DEV__ || shouldEnableDevToolsExtensions) {
+    return
+  }
+
+  const extensions = session.defaultSession.getAllExtensions()
+  for (const extension of extensions) {
+    try {
+      session.defaultSession.removeExtension(extension.id)
+    } catch (e) {
+      log.warn(
+        `Unable to remove extension '${extension.name}' (${extension.id}) before startup`,
+        e as Error
+      )
+    }
+  }
+}
+
+async function shouldHandleOAuthRelay(argv: string[]): Promise<boolean> {
+  const matchingUrl = getProtocolURLFromCommandLine(argv)
+  if (matchingUrl === null) {
+    return false
+  }
+
+  if (!startupPolicy.registerDevelopmentAuthProtocolOnly) {
+    return false
+  }
+
+  const action = parseAppURL(matchingUrl)
+  if (!isOAuthAction(action)) {
+    return false
+  }
+
+  await relayOAuthCallbackAction(action)
+  shouldCreateInitialWindow = false
+  return true
+}
+
+async function handleCommandLineArguments(argv: string[]): Promise<void> {
   const args = parseCommandLineArgs(argv, {
     boolean: ['protocol-launcher'],
   })
@@ -244,7 +517,6 @@ async function handleCommandLineArguments(argv: string[]) {
   // `[executable path] --protocol-launcher "%1"`. Note that extra command
   // line arguments might be added by Chromium
   // (https://electronjs.org/docs/api/app#event-second-instance).
-
   if (__WIN32__ && args['protocol-launcher'] === true) {
     // On Windows we'll end up getting called with something like
     // `--protocol-launcher --allow-file-access-from-files x-github-client://..`
@@ -257,19 +529,46 @@ async function handleCommandLineArguments(argv: string[]) {
     // to resort to looking through all arguments looking for something that
     // appears to be an app url.
     const prefixes = Array.from(possibleProtocols, p => `${p}://`)
-    const matchingUrl = argv.find(arg => {
-      if (prefixes.some(p => arg.startsWith(p))) {
+    let matchingUrl: string | null = null
+    argv.some(arg => {
+      const possibleValues = [arg]
+      try {
+        possibleValues.push(decodeURIComponent(arg))
+      } catch {
+        // Ignore malformed URI sequences.
+      }
+
+      const found = possibleValues.some(candidate => {
+        if (!prefixes.some(p => candidate.startsWith(p))) {
+          return false
+        }
+
         try {
-          new URL(arg)
+          new URL(candidate)
+          matchingUrl = candidate
           return true
         } catch (e) {
-          log.error(`Unable to parse argument as URL: ${arg}`)
+          log.error(`Unable to parse argument as URL: ${candidate}`)
+          return false
         }
-      }
-      return false
+      })
+
+      return found
     })
 
     if (matchingUrl) {
+      const action = parseAppURL(matchingUrl)
+
+      await shouldHandleOAuthRelay([`--protocol-launcher`, matchingUrl])
+      if (
+        startupPolicy.registerDevelopmentAuthProtocolOnly &&
+        isOAuthAction(action)
+      ) {
+        // The OAuth callback was relayed and this invocation should not
+        // create a new window.
+        return
+      }
+
       handleAppURL(matchingUrl)
     } else {
       log.error(`Encountered --protocol-launcher without app url`)
@@ -308,12 +607,83 @@ function handleCLIAction(action: CLIAction) {
  */
 function setAsDefaultProtocolClient(protocol: string) {
   if (__WIN32__) {
-    app.setAsDefaultProtocolClient(protocol, process.execPath, [
+    const executablePath =
+      startupPolicy.registerDevelopmentAuthProtocolOnly
+        ? getDevelopmentBuildExecutablePath() ?? process.execPath
+        : process.execPath
+
+    app.setAsDefaultProtocolClient(protocol, executablePath, [
       protocolLauncherArg,
     ])
   } else {
     app.setAsDefaultProtocolClient(protocol)
   }
+}
+
+function openNewAppWindow() {
+  createWindow()
+}
+
+function getDevelopmentBuildExecutablePath(): string | null {
+  if (!__WIN32__) {
+    return process.execPath
+  }
+
+  for (const candidate of [app.getPath('exe'), process.execPath]) {
+    const basename = Path.basename(candidate).toLowerCase()
+    if (basename !== 'electron.exe' && basename !== 'node.exe') {
+      return candidate
+    }
+  }
+
+  const preferredArchitecture = process.arch === 'arm64' ? 'arm64' : 'x64'
+
+  return Path.resolve(
+    process.cwd(),
+    'dist',
+    `GitHubDesktop-dev-win32-${preferredArchitecture}`,
+    'GitHubDesktop-dev.exe'
+  )
+}
+
+async function relayOAuthCallbackAction(
+  action: ReturnType<typeof parseAppURL>
+): Promise<boolean> {
+  if (!isOAuthAction(action)) {
+    return false
+  }
+
+  try {
+    const relayPath = getOAuthCallbackRelayPath(app.getPath('userData'))
+    const payload = createOAuthCallbackRelayPayload(action)
+    await Fs.promises.writeFile(relayPath, JSON.stringify(payload), 'utf8')
+    return true
+  } catch (e) {
+    log.error(`Unable to relay OAuth callback action`, e)
+    return false
+  }
+}
+
+function updateWindowsUserTasks() {
+  if (!__WIN32__ || !startupPolicy.registerDevelopmentAuthProtocolOnly) {
+    return
+  }
+
+  const executablePath = getDevelopmentBuildExecutablePath()
+  if (!executablePath) {
+    return
+  }
+
+  app.setUserTasks([
+    {
+      program: executablePath,
+      arguments: '',
+      iconPath: executablePath,
+      iconIndex: 0,
+      title: 'New window',
+      description: 'Open another GitHub Desktop development window',
+    },
+  ])
 }
 
 if (process.env.GITHUB_DESKTOP_DISABLE_HARDWARE_ACCELERATION) {
@@ -324,15 +694,26 @@ if (process.env.GITHUB_DESKTOP_DISABLE_HARDWARE_ACCELERATION) {
 }
 
 app.on('ready', () => {
-  if (isDuplicateInstance || handlingSquirrelEvent) {
+  removeLoadedExtensions()
+
+  if (isDuplicateInstance || handlingSquirrelEvent || !shouldCreateInitialWindow) {
+    if (!shouldCreateInitialWindow) {
+      app.quit()
+    }
     return
   }
 
   readyTime = now() - launchTime
 
-  possibleProtocols.forEach(protocol => setAsDefaultProtocolClient(protocol))
+  if (startupPolicy.registerProtocolHandlers) {
+    possibleProtocols.forEach(protocol => setAsDefaultProtocolClient(protocol))
+  } else if (startupPolicy.registerDevelopmentAuthProtocolOnly) {
+    setAsDefaultProtocolClient(DevelopmentOAuthCallbackProtocol)
+    updateWindowsUserTasks()
+  }
 
   createWindow()
+  createAppTray()
 
   const orderedWebRequest = new OrderedWebRequest(
     session.defaultSession.webRequest
@@ -379,9 +760,7 @@ app.on('ready', () => {
       // https://github.com/electron/electron/issues/2717
       Menu.setApplicationMenu(newMenu)
 
-      if (mainWindow !== null) {
-        mainWindow.sendAppMenu()
-      }
+      broadcastAppMenu()
 
       return
     }
@@ -425,10 +804,10 @@ app.on('ready', () => {
       }
     }
 
-    if (menuHasChanged && mainWindow) {
+    if (menuHasChanged) {
       // https://github.com/electron/electron/issues/2717
       Menu.setApplicationMenu(newMenu)
-      mainWindow.sendAppMenu()
+      broadcastAppMenu()
     }
   })
 
@@ -437,6 +816,11 @@ app.on('ready', () => {
    * is executed (ie clicked).
    */
   ipcMain.on('execute-menu-item-by-id', (event, id) => {
+    if (id === 'new-window') {
+      createWindow()
+      return
+    }
+
     const currentMenu = Menu.getApplicationMenu()
 
     if (currentMenu === null) {
@@ -479,9 +863,9 @@ app.on('ready', () => {
       }
     }
 
-    if (sendMenuChangedEvent && mainWindow) {
+    if (sendMenuChangedEvent) {
       Menu.setApplicationMenu(currentMenu)
-      mainWindow.sendAppMenu()
+      broadcastAppMenu()
     }
   })
 
@@ -511,43 +895,53 @@ app.on('ready', () => {
     })
   })
 
-  ipcMain.handle('check-for-updates', async (_, url) =>
-    mainWindow?.checkForUpdates(url)
-  )
+  ipcMain.handle('check-for-updates', async (event, url) => {
+    const window = getWindowFromEvent(event)
+    return window?.checkForUpdates(url)
+  })
 
-  ipcMain.on('quit-and-install-updates', () =>
-    mainWindow?.quitAndInstallUpdate()
-  )
+  ipcMain.on('quit-and-install-updates', event => {
+    const window = getWindowFromEvent(event)
+    window?.quitAndInstallUpdate()
+  })
 
   ipcMain.on('quit-app', () => app.quit())
 
-  ipcMain.on('minimize-window', () => mainWindow?.minimizeWindow())
+  ipcMain.on('open-new-app-instance', () => openNewAppWindow())
 
-  ipcMain.on('maximize-window', () => mainWindow?.maximizeWindow())
+  ipcMain.on('minimize-window', event =>
+    getWindowFromEvent(event)?.minimizeWindow()
+  )
 
-  ipcMain.on('unmaximize-window', () => mainWindow?.unmaximizeWindow())
+  ipcMain.on('maximize-window', event =>
+    getWindowFromEvent(event)?.maximizeWindow()
+  )
 
-  ipcMain.on('close-window', () => mainWindow?.closeWindow())
+  ipcMain.on('unmaximize-window', event =>
+    getWindowFromEvent(event)?.unmaximizeWindow()
+  )
+
+  ipcMain.on('close-window', event => getWindowFromEvent(event)?.closeWindow())
 
   ipcMain.handle(
     'is-window-maximized',
-    async () => mainWindow?.isMaximized() ?? false
+    async event => getWindowFromEvent(event)?.isMaximized() ?? false
   )
 
   ipcMain.handle('get-apple-action-on-double-click', async () =>
     systemPreferences.getUserDefault('AppleActionOnDoubleClick', 'string')
   )
 
-  ipcMain.handle('get-current-window-state', async () =>
-    mainWindow?.getCurrentWindowState()
+  ipcMain.handle('get-current-window-state', async event =>
+    getWindowFromEvent(event)?.getCurrentWindowState()
   )
 
-  ipcMain.handle('get-current-window-zoom-factor', async () =>
-    mainWindow?.getCurrentWindowZoomFactor()
+  ipcMain.handle('get-current-window-zoom-factor', async event =>
+    getWindowFromEvent(event)?.getCurrentWindowZoomFactor()
   )
 
-  ipcMain.on('set-window-zoom-factor', (_, zoomFactor: number) =>
-    mainWindow?.setWindowZoomFactor(zoomFactor)
+  ipcMain.on('set-window-zoom-factor', (event, zoomFactor: number) =>
+    getWindowFromEvent(event)?.setWindowZoomFactor(zoomFactor)
   )
 
   if (__WIN32__) {
@@ -559,7 +953,7 @@ app.on('ready', () => {
    * An event sent by the renderer asking for a copy of the current
    * application menu.
    */
-  ipcMain.on('get-app-menu', () => mainWindow?.sendAppMenu())
+  ipcMain.on('get-app-menu', event => getWindowFromEvent(event)?.sendAppMenu())
 
   ipcMain.on('show-certificate-trust-dialog', (_, certificate, message) => {
     // This API is only implemented for macOS and Windows right now.
@@ -642,12 +1036,12 @@ app.on('ready', () => {
   )
 
   /** An event sent by the renderer asking to select all of the window's contents */
-  ipcMain.on('select-all-window-contents', () =>
-    mainWindow?.selectAllWindowContents()
+  ipcMain.on('select-all-window-contents', event =>
+    getWindowFromEvent(event)?.selectAllWindowContents()
   )
 
   /** An event sent by the renderer indicating a modal dialog is opened */
-  ipcMain.on('dialog-did-open', () => mainWindow?.dialogDidOpen())
+  ipcMain.on('dialog-did-open', event => getWindowFromEvent(event)?.dialogDidOpen())
 
   /**
    * An event sent by the renderer asking whether the Desktop is in the
@@ -673,30 +1067,28 @@ app.on('ready', () => {
    *
    * Returns null if filepath is undefined or if dialog is canceled.
    */
-  ipcMain.handle(
-    'show-save-dialog',
-    async (_, options) => mainWindow?.showSaveDialog(options) ?? null
-  )
+  ipcMain.handle('show-save-dialog', async (event, options) => {
+    return (await getWindowFromEvent(event)?.showSaveDialog(options)) ?? null
+  })
 
   /**
    * An event sent by the renderer asking to show the open dialog
    */
-  ipcMain.handle(
-    'show-open-dialog',
-    async (_, options) => mainWindow?.showOpenDialog(options) ?? null
-  )
+  ipcMain.handle('show-open-dialog', async (event, options) => {
+    return (await getWindowFromEvent(event)?.showOpenDialog(options)) ?? null
+  })
 
   /**
    * An event sent by the renderer asking obtain whether the window is focused
    */
   ipcMain.handle(
     'is-window-focused',
-    async () => mainWindow?.isFocused() ?? false
+    async event => getWindowFromEvent(event)?.isFocused() ?? false
   )
 
   /** An event sent by the renderer asking to focus the main window. */
-  ipcMain.on('focus-window', () => {
-    mainWindow?.focus()
+  ipcMain.on('focus-window', event => {
+    getWindowFromEvent(event)?.focus()
   })
 
   ipcMain.on('set-native-theme-source', (_, themeName) => {
@@ -722,6 +1114,10 @@ app.on('ready', () => {
   ipcMain.handle('request-notifications-permission', async () =>
     requestNotificationsPermission()
   )
+})
+
+app.on('will-quit', () => {
+  destroyAppTray()
 })
 
 app.on('activate', () => {
@@ -757,32 +1153,17 @@ app.on(
 
 function createWindow() {
   const window = new AppWindow()
-
-  if (__DEV__) {
-    const {
-      default: installExtension,
-      REACT_DEVELOPER_TOOLS,
-    } = require('electron-devtools-installer')
-
-    const axeDevTools = {
-      id: 'lhdoppojpmngadmnindnejefpokejbdd',
-    }
-
-    const extensions = [REACT_DEVELOPER_TOOLS, axeDevTools]
-
-    try {
-      installExtension(extensions, {
-        loadExtensionOptions: { allowFileAccess: true },
-      })
-      console.log('Added Extensions: "React Developer Tools", "axe DevTools"')
-    } catch (e) {
-      console.log('An error occurred while loading extensions: ', e)
-    }
-  }
+  installDevToolsExtensions()
 
   window.onClosed(() => {
-    mainWindow = null
-    if (!__DARWIN__ && !preventQuit) {
+    appWindows.delete(window.id)
+
+    if (mainWindow === window) {
+      const nextWindow = appWindows.values().next().value ?? null
+      mainWindow = nextWindow
+    }
+
+    if (!__DARWIN__ && !preventQuit && appWindows.size === 0) {
       app.quit()
     }
   })
@@ -795,16 +1176,19 @@ function createWindow() {
       rendererReadyTime: window.rendererReadyTime!,
     })
 
-    const fns = onDidLoadFns!
-    onDidLoadFns = null
-    for (const fn of fns) {
-      fn(window)
+    const fns = onDidLoadFns
+    if (fns !== null) {
+      onDidLoadFns = null
+      for (const fn of fns) {
+        fn(window)
+      }
     }
   })
 
-  window.load()
-
+  appWindows.set(window.id, window)
   mainWindow = window
+
+  window.load()
 }
 
 /**

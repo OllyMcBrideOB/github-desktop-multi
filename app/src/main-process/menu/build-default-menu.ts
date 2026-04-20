@@ -113,6 +113,15 @@ export function buildDefaultMenuTemplate({
         click: emit('create-repository'),
         accelerator: 'CmdOrCtrl+N',
       },
+      ...(__DEV__
+        ? [
+            {
+              label: __DARWIN__ ? 'New Window' : 'New &window',
+              id: 'new-window',
+              click: emit('open-new-window'),
+            } as Electron.MenuItemConstructorOptions,
+          ]
+        : []),
       separator,
       {
         label: __DARWIN__ ? 'Add Local Repository…' : 'Add &local repository…',
@@ -649,16 +658,12 @@ type ClickHandler = (
  */
 export function emit(name: MenuEvent): ClickHandler {
   return (_, focusedWindow) => {
-    // focusedWindow can be null if the menu item was clicked without the window
-    // being in focus. A simple way to reproduce this is to click on a menu item
-    // while in DevTools. Since Desktop only supports one window at a time we
-    // can be fairly certain that the first BrowserWindow we find is the one we
-    // want.
     const window =
-      focusedWindow instanceof BrowserWindow
-        ? focusedWindow
-        : BrowserWindow.getAllWindows()[0]
-    if (window !== undefined) {
+      BrowserWindow.getFocusedWindow() ??
+      (focusedWindow instanceof BrowserWindow ? focusedWindow : null) ??
+      BrowserWindow.getAllWindows()[0]
+
+    if (window !== undefined && window !== null) {
       ipcWebContents.send(window.webContents, 'menu-event', name)
     }
   }

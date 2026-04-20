@@ -30,6 +30,7 @@ export type MenuEvent =
   | 'branch-on-github'
   | 'view-repository-on-github'
   | 'clone-repository'
+  | 'open-new-window'
   | 'show-about'
   | 'go-to-commit-message'
   | 'open-pull-request'

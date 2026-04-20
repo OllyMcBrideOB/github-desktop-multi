@@ -99,6 +99,8 @@ import {
   executeMenuItem,
   moveToApplicationsFolder,
   isWindowFocused,
+  openNewAppInstance,
+  showOpenDialog,
 } from '../main-process-proxy'
 import {
   CommitStatusStore,
@@ -1672,6 +1674,11 @@ export class Dispatcher {
   /** Moves the app to the /Applications folder on macOS. */
   public moveToApplicationsFolder() {
     return moveToApplicationsFolder()
+  }
+
+  /** Launches a new process for the app. */
+  public openNewAppInstance() {
+    openNewAppInstance()
   }
 
   /**

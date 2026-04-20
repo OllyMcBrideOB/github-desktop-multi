@@ -61,6 +61,18 @@
         width: 100%;
       }
     }
+    &.new-window-toolbar-button {
+      width: 42px;
+      flex-shrink: 0;
+
+      & > button {
+        justify-content: center;
+
+        .icon {
+          margin-right: 0;
+        }
+      }
+    }
     &.toolbar-dropdown-arrow-button {
       width: 39px;
       &.resizable {

@@ -37,6 +37,7 @@ export class AppWindow {
   private _loadTime: number | null = null
   private _rendererReadyTime: number | null = null
   private isDownloadingUpdate: boolean = false
+  private hasRecoveredFromCrash = false
 
   private minWidth = 960
   private minHeight = 660
@@ -61,7 +62,7 @@ export class AppWindow {
       show: false,
       // This fixes subpixel aliasing on Windows
       // See https://github.com/atom/atom/commit/683bef5b9d133cb194b476938c77cc07fd05b972
-      backgroundColor: '#fff',
+      backgroundColor: '#24292f',
       webPreferences: {
         // Disable auxclick event
         // See https://developers.google.com/web/updates/2016/10/auxclick
@@ -169,9 +170,9 @@ export class AppWindow {
     })
 
     this.window.webContents.once('did-finish-load', () => {
-      if (process.env.NODE_ENV === 'development') {
-        this.window.webContents.openDevTools()
-      }
+      log.info(
+        `did-finish-load for window #${this.window.id}: ${this.window.webContents.getURL()}`
+      )
 
       this._loadTime = now() - startLoad
 
@@ -182,16 +183,94 @@ export class AppWindow {
       this.window.webContents.setVisualZoomLevelLimits(1, 1)
     })
 
-    this.window.webContents.on('did-fail-load', () => {
-      this.window.webContents.openDevTools()
-      this.window.show()
+    this.window.webContents.on(
+      'did-fail-load',
+      (_event, errorCode, errorDescription, validatedURL) => {
+        log.warn(
+          `did-fail-load window #${this.window.id} (${errorCode}): ${errorDescription} (${validatedURL})`
+        )
+        this.show()
+      }
+    )
+
+    this.window.webContents.on('did-navigate', (_event, url) =>
+      log.info(`did-navigate in window #${this.window.id}: ${url}`)
+    )
+
+    this.window.webContents.on('render-process-gone', (_, details) => {
+      log.error(
+        `render-process-gone window #${this.window.id}: ${details.reason} (${details.exitCode})`
+      )
+
+      if (
+        this.hasRecoveredFromCrash ||
+        details.reason === 'clean-exit' ||
+        this.window.isDestroyed()
+      ) {
+        return
+      }
+
+      this.hasRecoveredFromCrash = true
+      log.info(
+        `Attempting automatic reload of window #${this.window.id} after render crash`
+      )
+      setTimeout(() => {
+        if (!this.window.isDestroyed()) {
+          this.window.webContents.reload()
+        }
+      }, 250)
     })
 
-    // TODO: This should be scoped by the window.
-    ipcMain.once('renderer-ready', (_, readyTime) => {
+    this.window.webContents.on(
+      'console-message',
+      (_, level, message, line, sourceId) => {
+        if (level < 2) {
+          return
+        }
+
+        log.warn(
+          `renderer console message in window #${this.window.id}: [${sourceId}:${line}] ${message}`
+        )
+      }
+    )
+
+    const rendererReadyProxy = (
+      _event: Electron.IpcMainEvent,
+      readyTime: number
+    ) => {
+      log.info(`renderer-ready received for window #${this.window.id}`)
       this._rendererReadyTime = readyTime
       this.maybeEmitDidLoad()
-    })
+    }
+
+    const rendererReadyHandler = (event: Electron.IpcMainEvent, readyTime: number) => {
+      if (this.window.isDestroyed()) {
+        return
+      }
+
+      if (event.sender === this.window.webContents) {
+        rendererReadyProxy(event, readyTime)
+      }
+    }
+
+    const updateWindowBackgroundColorHandler = (
+      event: Electron.IpcMainEvent,
+      color: string
+    ) => {
+      if (this.window.isDestroyed()) {
+        return
+      }
+
+      if (event.sender === this.window.webContents) {
+        this.window.setBackgroundColor(color)
+      }
+    }
+
+    ipcMain.on('renderer-ready', rendererReadyHandler)
+    ipcMain.on(
+      'update-window-background-color',
+      updateWindowBackgroundColorHandler
+    )
 
     this.window.on('focus', () =>
       ipcWebContents.send(this.window.webContents, 'focus')
@@ -216,11 +295,8 @@ export class AppWindow {
       ipcWebContents.send(this.window.webContents, 'native-theme-updated')
     })
 
-    ipcMain.on('update-window-background-color', (_, color) => {
-      this.window.setBackgroundColor(color)
-    })
-
     this.setupAutoUpdater()
+
   }
 
   /**
@@ -281,6 +357,7 @@ export class AppWindow {
   /** Show the window. */
   public show() {
     this.window.show()
+
     if (this.shouldMaximizeOnShow) {
       // Only maximize the window the first time it's shown, not every time.
       // Otherwise, it causes the problem described in desktop/desktop#11590
@@ -400,6 +477,10 @@ export class AppWindow {
 
   public destroy() {
     this.window.destroy()
+  }
+
+  public get id() {
+    return this.window.id
   }
 
   public setupAutoUpdater() {

@@ -37,15 +37,18 @@ const getPortOrDefault = () => {
 }
 
 const port = getPortOrDefault()
+const isStandaloneDevelopmentBuild = process.env.STANDALONE_DEV_BUILD === '1'
 const webpackHotModuleReloadUrl = `webpack-hot-middleware/client?path=http://localhost:${port}/__webpack_hmr`
 const publicPath = `http://localhost:${port}/build/`
 
 const rendererConfig = merge({}, common.renderer, config, {
   entry: {
-    renderer: [webpackHotModuleReloadUrl, getRendererEntryPoint()],
+    renderer: isStandaloneDevelopmentBuild
+      ? [getRendererEntryPoint()]
+      : [webpackHotModuleReloadUrl, getRendererEntryPoint()],
   },
   output: {
-    publicPath,
+    publicPath: isStandaloneDevelopmentBuild ? '' : publicPath,
   },
   module: {
     rules: [
@@ -65,7 +68,9 @@ const rendererConfig = merge({}, common.renderer, config, {
   infrastructureLogging: {
     level: 'error',
   },
-  plugins: [new webpack.HotModuleReplacementPlugin()],
+  plugins: isStandaloneDevelopmentBuild
+    ? []
+    : [new webpack.HotModuleReplacementPlugin()],
 })
 
 const crashConfig = merge({}, common.crash, config, {

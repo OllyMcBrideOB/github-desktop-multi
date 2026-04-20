@@ -14,12 +14,18 @@ import {
   requestOAuthToken,
   getOAuthAuthorizationURL,
 } from '../../lib/api'
+import * as Fs from 'fs'
 
 import { TypedBaseStore } from './base-store'
 import { IOAuthAction } from '../parse-app-url'
 import { shell } from '../app-shell'
 import noop from 'lodash/noop'
 import { AccountsStore } from './accounts-store'
+import { getPath } from '../../ui/main-process-proxy'
+import {
+  getOAuthCallbackRelayPath,
+  IOAuthCallbackRelayPayload,
+} from '../oauth-callback-relay'
 
 /**
  * An enumeration of the possible steps that the sign in
@@ -157,6 +163,8 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
   private state: SignInState | null = null
 
   private accounts: ReadonlyArray<Account> = []
+  private oauthCallbackRelayPath: string | null = null
+  private lastProcessedRelayId: string | null = null
 
   public constructor(private readonly accountStore: AccountsStore) {
     super()
@@ -167,6 +175,10 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
     this.accountStore.onDidUpdate(accounts => {
       this.accounts = accounts
     })
+
+    if (__DEV__) {
+      void this.initializeOAuthCallbackRelayWatcher()
+    }
   }
 
   private emitAuthenticate(account: Account) {
@@ -329,7 +341,58 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       })
   }
 
-  public async resolveOAuthRequest(action: IOAuthAction) {
+  private async initializeOAuthCallbackRelayWatcher() {
+    try {
+      const userDataPath = await getPath('userData')
+      this.oauthCallbackRelayPath = getOAuthCallbackRelayPath(userDataPath)
+
+      Fs.watchFile(this.oauthCallbackRelayPath, { interval: 500 }, () => {
+        void this.consumeRelayedOAuthRequest()
+      })
+
+      void this.consumeRelayedOAuthRequest()
+    } catch (e) {
+      log.warn('[SignInStore] failed to initialize OAuth callback relay', e)
+    }
+  }
+
+  private async consumeRelayedOAuthRequest() {
+    const relayPath = this.oauthCallbackRelayPath
+    if (relayPath === null) {
+      return
+    }
+
+    try {
+      const payload = JSON.parse(
+        await Fs.promises.readFile(relayPath, 'utf8')
+      ) as IOAuthCallbackRelayPayload
+
+      if (
+        typeof payload.relayId === 'string' &&
+        payload.relayId === this.lastProcessedRelayId
+      ) {
+        return
+      }
+
+      this.lastProcessedRelayId = payload.relayId ?? null
+
+      if (payload.name !== 'oauth') {
+        return
+      }
+
+      await this.resolveOAuthRequest(payload, false)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        return
+      }
+      log.warn('[SignInStore] failed to consume relayed OAuth callback', e)
+    }
+  }
+
+  public async resolveOAuthRequest(
+    action: IOAuthAction,
+    allowRelay = true
+  ) {
     if (!this.state || this.state.kind !== SignInStep.Authentication) {
       return
     }
@@ -339,9 +402,11 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
     }
 
     if (this.state.oauthState.state !== action.state) {
-      log.warn(
-        'requestAuthenticatedUser was not called with valid OAuth state. This is likely due to a browser reloading the callback URL. Contact GitHub Support if you believe this is an error'
-      )
+      if (allowRelay) {
+        log.warn(
+          'requestAuthenticatedUser was not called with valid OAuth state. This is likely due to a browser reloading the callback URL. Contact GitHub Support if you believe this is an error'
+        )
+      }
       return
     }
 

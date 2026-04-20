@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
-import { API, getNextPagePathWithIncreasingPageSize } from '../../src/lib/api'
+import {
+  API,
+  getNextPagePathWithIncreasingPageSize,
+  getOAuthAuthorizationURL,
+} from '../../src/lib/api'
 import { CopilotError } from '../../src/lib/copilot-error'
 import * as URL from 'url'
 
@@ -50,6 +54,23 @@ function assertNext(current: IPageInfo, expected: IPageInfo) {
 }
 
 describe('API', () => {
+  describe('getOAuthAuthorizationURL', () => {
+    it('uses development oauth callback redirect uri in development builds', () => {
+      const url = new window.URL(
+        getOAuthAuthorizationURL('https://github.com', 'state-123')
+      )
+
+      if (__DEV__) {
+        assert.equal(
+          url.searchParams.get('redirect_uri'),
+          'x-github-desktop-dev-auth://oauth'
+        )
+      } else {
+        assert.equal(url.searchParams.get('redirect_uri'), null)
+      }
+    })
+  })
+
   describe('getNextPagePathWithIncreasingPageSize', () => {
     it("returns null when there's no link header", () => {
       assert(getNextPagePathWithIncreasingPageSize(new Response()) === null)

@@ -142,6 +142,7 @@ export type GitHubAccountType = 'User' | 'Organization'
 
 /** The OAuth scopes we want to request */
 const oauthScopes = ['repo', 'user', 'workflow']
+const developmentOAuthRedirectURI = 'x-github-desktop-dev-auth://oauth'
 
 /**
  * Information about a repository as returned by the GitHub API.
@@ -2349,13 +2350,16 @@ export function getOAuthAuthorizationURL(
   endpoint: string,
   state: string
 ): string {
-  const urlBase = getHTMLURL(endpoint)
-  const scope = encodeURIComponent(oauthScopes.join(' '))
+  const authorizeURL = new window.URL('/login/oauth/authorize', getHTMLURL(endpoint))
+  authorizeURL.searchParams.set('client_id', ClientID ?? '')
+  authorizeURL.searchParams.set('scope', oauthScopes.join(' '))
+  authorizeURL.searchParams.set('state', state)
 
-  return new window.URL(
-    `/login/oauth/authorize?client_id=${ClientID}&scope=${scope}&state=${state}`,
-    urlBase
-  ).toString()
+  if (__DEV__) {
+    authorizeURL.searchParams.set('redirect_uri', developmentOAuthRedirectURI)
+  }
+
+  return authorizeURL.toString()
 }
 
 export async function requestOAuthToken(

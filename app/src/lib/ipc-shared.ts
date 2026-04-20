@@ -69,6 +69,7 @@ export type RequestChannels = {
   'update-accounts': (accounts: ReadonlyArray<EndpointToken>) => void
   'quit-and-install-updates': () => void
   'quit-app': () => void
+  'open-new-app-instance': () => void
   'minimize-window': () => void
   'maximize-window': () => void
   'unmaximize-window': () => void
