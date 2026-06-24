@@ -51,6 +51,7 @@ describe('IPC channel contract', () => {
     'update-accounts',
     'quit-and-install-updates',
     'quit-app',
+    'open-new-app-instance',
     'minimize-window',
     'maximize-window',
     'unmaximize-window',

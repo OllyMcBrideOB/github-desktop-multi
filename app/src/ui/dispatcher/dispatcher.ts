@@ -100,7 +100,6 @@ import {
   moveToApplicationsFolder,
   isWindowFocused,
   openNewAppInstance,
-  showOpenDialog,
 } from '../main-process-proxy'
 import {
   CommitStatusStore,
