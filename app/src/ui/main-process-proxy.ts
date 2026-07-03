@@ -257,6 +257,12 @@ export const showCertificateTrustDialog = sendProxy(
  */
 export const getPath = invokeProxy('get-path', 1)
 
+/** Tell the main process to obtain secondary profile launch metadata. */
+export const getSecondaryProfileInfo = invokeProxy(
+  'get-secondary-profile-info',
+  0
+)
+
 /**
  * Tell the main process to obtain the applications architecture
  */

@@ -1,10 +1,25 @@
-import { git, IGitStringExecutionOptions } from './core'
+import { git, GitError, IGitStringExecutionOptions } from './core'
 import { Repository } from '../../models/repository'
 import { IFetchProgress } from '../../models/progress'
 import { FetchProgressParser, executionOptionsWithProgress } from '../progress'
 import { IRemote } from '../../models/remote'
 import { ITrackingBranch } from '../../models/branch'
 import { envForRemoteOperation } from './environment'
+import { coerceToString } from './coerce-to-string'
+
+const codexRefRe = /\brefs\/codex\/[^\s'"`<>]+/g
+
+export function getCodexRefsFromText(text: string) {
+  return new Set([...text.matchAll(codexRefRe)].map(match => match[0]))
+}
+
+export function getCodexRefsFromFetchError(error: GitError) {
+  return new Set([
+    ...getCodexRefsFromText(error.message),
+    ...getCodexRefsFromText(coerceToString(error.result.stderr)),
+    ...getCodexRefsFromText(coerceToString(error.result.stdout)),
+  ])
+}
 
 async function getFetchArgs(
   remote: string,
@@ -85,7 +100,30 @@ export async function fetch(
 
   const args = await getFetchArgs(remote.name, progressCallback)
 
-  await git(args, repository.path, 'fetch', opts)
+  try {
+    await git(args, repository.path, 'fetch', opts)
+  } catch (e) {
+    if (!(e instanceof GitError)) {
+      throw e
+    }
+
+    const codexRefs = getCodexRefsFromFetchError(e)
+    if (codexRefs.size === 0) {
+      throw e
+    }
+
+    log.warn(
+      `Fetch failed because of Codex refs; pruning ${codexRefs.size} refs and retrying`
+    )
+
+    for (const ref of codexRefs) {
+      await git(['update-ref', '-d', ref], repository.path, 'deleteCodexRef', {
+        successExitCodes: new Set([0, 1]),
+      })
+    }
+
+    await git(args, repository.path, 'fetch', opts)
+  }
 }
 
 /** Fetch a given refspec from the given remote. */

@@ -173,7 +173,9 @@ export class AppWindow {
 
     this.window.webContents.once('did-finish-load', () => {
       log.info(
-        `did-finish-load for window #${this.window.id}: ${this.window.webContents.getURL()}`
+        `did-finish-load for window #${
+          this.window.id
+        }: ${this.window.webContents.getURL()}`
       )
 
       this._loadTime = now() - startLoad
@@ -245,7 +247,10 @@ export class AppWindow {
       this.maybeEmitDidLoad()
     }
 
-    const rendererReadyHandler = (event: Electron.IpcMainEvent, readyTime: number) => {
+    const rendererReadyHandler = (
+      event: Electron.IpcMainEvent,
+      readyTime: number
+    ) => {
       if (this.window.isDestroyed()) {
         return
       }
@@ -298,7 +303,6 @@ export class AppWindow {
     })
 
     this.setupAutoUpdater()
-
   }
 
   /**

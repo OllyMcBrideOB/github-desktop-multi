@@ -7,7 +7,7 @@ import {
   getBranchesDifferingFromUpstream,
 } from '../../../src/lib/git/for-each-ref'
 import { Branch } from '../../../src/models/branch'
-import { fastForwardBranches } from '../../../src/lib/git'
+import { fastForwardBranches, getCodexRefsFromText } from '../../../src/lib/git'
 import * as Path from 'path'
 import { readFile } from 'fs/promises'
 
@@ -16,6 +16,27 @@ function branchWithName(branches: ReadonlyArray<Branch>, name: string) {
 }
 
 describe('git/fetch', () => {
+  describe('getCodexRefsFromText', () => {
+    it('finds Codex refs in fetch errors', () => {
+      const refs =
+        getCodexRefsFromText(`fatal: bad object refs/codex/turn-diffs/checkpoints/b823682e8d894aee0e41dc25faa8622a4c5ec87776ae050cee61fcd4a496ec20/c66a9c6d3da8e6863a8fde55bc33bb4b3f8c23e71df6fcecb345b8441c042302/1782309610967/17f9f91d-728b-4322-b8a1-ef7ee6695e4e
+error: https://github.com/Open-Bionics/OB2_FW_Common.git did not send all necessary objects`)
+
+      assert.deepEqual(
+        [...refs],
+        [
+          'refs/codex/turn-diffs/checkpoints/b823682e8d894aee0e41dc25faa8622a4c5ec87776ae050cee61fcd4a496ec20/c66a9c6d3da8e6863a8fde55bc33bb4b3f8c23e71df6fcecb345b8441c042302/1782309610967/17f9f91d-728b-4322-b8a1-ef7ee6695e4e',
+        ]
+      )
+    })
+
+    it('ignores non-Codex refs', () => {
+      const refs = getCodexRefsFromText('fatal: bad object refs/heads/main')
+
+      assert.equal(refs.size, 0)
+    })
+  })
+
   describe('fastForwardBranches', () => {
     it('fast-forwards branches using fetch', async t => {
       const testRepoPath = await setupFixtureRepository(

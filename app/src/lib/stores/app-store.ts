@@ -7768,7 +7768,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
     // in order to have the list of repositories ready for them when they
     // get to the blankslate.
     if (this.showWelcomeFlow && storedAccount !== null) {
+      this.showWelcomeFlow = false
+      markWelcomeFlowComplete()
       this.apiRepositoriesStore.loadRepositories(storedAccount)
+      this.emitUpdate()
     }
   }
 

@@ -3,6 +3,7 @@ import '../lib/logging/renderer/install'
 import * as React from 'react'
 import * as ReactDOM from 'react-dom'
 import * as Path from 'path'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 import { App } from './app'
 import {
   Dispatcher,
@@ -45,7 +46,11 @@ import {
 } from '../lib/databases'
 import { shellNeedsPatching, updateEnvironmentForProcess } from '../lib/shell'
 import { installDevGlobals } from './install-globals'
-import { reportUncaughtException, sendErrorReport } from './main-process-proxy'
+import {
+  getSecondaryProfileInfo,
+  reportUncaughtException,
+  sendErrorReport,
+} from './main-process-proxy'
 import { getOS } from '../lib/get-os'
 import {
   enableSourceMaps,
@@ -76,6 +81,11 @@ import { trampolineServer } from '../lib/trampoline/trampoline-server'
 import { TrampolineCommandIdentifier } from '../lib/trampoline/trampoline-command'
 import { createAskpassTrampolineHandler } from '../lib/trampoline/trampoline-askpass-handler'
 import { createCredentialHelperTrampolineHandler } from '../lib/trampoline/trampoline-credential-helper'
+import {
+  applySecondaryProfileStateSnapshot,
+  createSecondaryProfileStateSnapshot,
+  ISecondaryProfileState,
+} from '../lib/secondary-profile-state'
 
 if (__DEV__) {
   installDevGlobals()
@@ -100,6 +110,59 @@ process.env['LOCAL_GIT_DIRECTORY'] = Path.resolve(__dirname, 'git')
 delete process.env.GIT_EXEC_PATH
 
 const startTime = performance.now()
+
+const secondaryProfileInfo = await getSecondaryProfileInfo()
+
+async function hydrateSecondaryProfileState() {
+  if (!secondaryProfileInfo.isSecondaryCurrentDesktopWindow) {
+    return
+  }
+
+  try {
+    const rawSnapshot = await readFile(
+      secondaryProfileInfo.snapshotPath,
+      'utf8'
+    )
+    const snapshot = JSON.parse(rawSnapshot) as ISecondaryProfileState
+    const didApply = applySecondaryProfileStateSnapshot(snapshot)
+
+    if (didApply) {
+      log.info(
+        `Hydrated secondary profile state from ${secondaryProfileInfo.snapshotPath}`
+      )
+    }
+  } catch (e) {
+    log.warn(
+      `Unable to hydrate secondary profile state from ${secondaryProfileInfo.snapshotPath}`,
+      e
+    )
+  }
+}
+
+async function writeSecondaryProfileStateSnapshot() {
+  if (secondaryProfileInfo.isSecondaryCurrentDesktopWindow) {
+    return
+  }
+
+  try {
+    const snapshot = createSecondaryProfileStateSnapshot()
+    await mkdir(Path.dirname(secondaryProfileInfo.snapshotPath), {
+      recursive: true,
+    })
+    await writeFile(
+      secondaryProfileInfo.snapshotPath,
+      JSON.stringify(snapshot),
+      'utf8'
+    )
+  } catch (e) {
+    log.warn(
+      `Unable to write secondary profile state snapshot to ${secondaryProfileInfo.snapshotPath}`,
+      e
+    )
+  }
+}
+
+await hydrateSecondaryProfileState()
 
 if (!process.env.TEST_ENV) {
   /* This is the magic trigger for webpack to go compile
@@ -256,6 +319,9 @@ const statsStore = new StatsStore(
 )
 
 const accountsStore = new AccountsStore(localStorage, TokenStore)
+accountsStore.onDidUpdate(() => {
+  void writeSecondaryProfileStateSnapshot()
+})
 
 const signInStore = new SignInStore(accountsStore)
 
@@ -324,7 +390,10 @@ const appStore = new AppStore(
 
 appStore.onDidUpdate(state => {
   currentState = state
+  void writeSecondaryProfileStateSnapshot()
 })
+
+void writeSecondaryProfileStateSnapshot()
 
 const dispatcher = new Dispatcher(
   appStore,

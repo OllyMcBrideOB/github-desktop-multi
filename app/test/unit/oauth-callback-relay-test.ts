@@ -10,7 +10,9 @@ import {
 describe('oauth-callback-relay', () => {
   it('creates a stable relay file path under userData', () => {
     assert.equal(
-      getOAuthCallbackRelayPath('C:\\Users\\Olly\\AppData\\Roaming\\GitHub Desktop-dev'),
+      getOAuthCallbackRelayPath(
+        'C:\\Users\\Olly\\AppData\\Roaming\\GitHub Desktop-dev'
+      ),
       `C:\\Users\\Olly\\AppData\\Roaming\\GitHub Desktop-dev\\${OAuthCallbackRelayFileName}`
     )
   })

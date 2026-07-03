@@ -3,6 +3,8 @@ export interface IStartupPolicyOptions {
   readonly isWindows: boolean
 }
 
+export type AppLaunchMode = 'normal' | 'new-window-on-current-desktop'
+
 export interface IStartupPolicy {
   readonly enforceSingleInstance: boolean
   readonly registerProtocolHandlers: boolean
@@ -15,8 +17,14 @@ export const WindowsDevForkAppUserModelId =
   'com.squirrel.GitHubDesktopMulti.GitHubDesktopMulti'
 
 export const DevelopmentOAuthCallbackProtocol = 'x-github-desktop-dev-auth'
-export const DevelopmentOAuthCallbackURL =
-  `${DevelopmentOAuthCallbackProtocol}://oauth`
+export const DevelopmentOAuthCallbackURL = `${DevelopmentOAuthCallbackProtocol}://oauth`
+export const NewWindowOnCurrentDesktopArg = '--new-window-on-current-desktop'
+
+export function getAppLaunchMode(args: ReadonlyArray<string>): AppLaunchMode {
+  return args.includes(NewWindowOnCurrentDesktopArg)
+    ? 'new-window-on-current-desktop'
+    : 'normal'
+}
 
 export function getStartupPolicy(
   options: IStartupPolicyOptions

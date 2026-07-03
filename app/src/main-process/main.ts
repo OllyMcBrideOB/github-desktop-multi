@@ -58,6 +58,8 @@ import parseCommandLineArgs from 'minimist'
 import { CLIAction } from '../lib/cli-action'
 import {
   DevelopmentOAuthCallbackProtocol,
+  getAppLaunchMode,
+  NewWindowOnCurrentDesktopArg,
   getStartupPolicy,
 } from './startup-policy'
 import {
@@ -65,11 +67,21 @@ import {
   getOAuthCallbackRelayPath,
   isOAuthAction,
 } from '../lib/oauth-callback-relay'
+import { SecondaryProfileStateFileName } from '../lib/secondary-profile-state'
 
 const shouldEnableDevToolsExtensions =
   process.env.GITHUB_DESKTOP_INSTALL_DEVTOOLS?.toLowerCase() === '1'
 
-const isSecondaryTrayInstance = process.argv.includes('--secondary-desktop-instance')
+const appLaunchMode = getAppLaunchMode(process.argv)
+const isNewWindowOnCurrentDesktopLaunch =
+  appLaunchMode === 'new-window-on-current-desktop'
+const primaryUserDataPath = app.getPath('userData')
+const secondaryProfileStatePath = Path.join(
+  primaryUserDataPath,
+  SecondaryProfileStateFileName
+)
+
+const secondaryUserDataReady = configureSecondaryUserDataForLaunch()
 
 if (__DEV__ && !shouldEnableDevToolsExtensions) {
   // Keep the main process predictable in the fork when running with multiple
@@ -81,6 +93,103 @@ if (__DEV__ && !shouldEnableDevToolsExtensions) {
 app.setAppLogsPath()
 enableSourceMaps()
 
+log.info(
+  `[startup] launchMode=${appLaunchMode} argv=${JSON.stringify(process.argv)}`
+)
+
+async function configureSecondaryUserDataForLaunch() {
+  if (!isNewWindowOnCurrentDesktopLaunch) {
+    return
+  }
+
+  const secondaryUserDataRoot = Path.join(
+    primaryUserDataPath,
+    'secondary-current-desktop'
+  )
+  const secondaryUserDataPath = Path.join(
+    secondaryUserDataRoot,
+    `${Date.now()}-${process.pid}`
+  )
+
+  app.setPath('userData', secondaryUserDataPath)
+
+  await seedSecondaryUserData(primaryUserDataPath, secondaryUserDataPath)
+  await pruneOldSecondaryUserData(secondaryUserDataRoot, secondaryUserDataPath)
+}
+
+async function seedSecondaryUserData(
+  primaryUserDataPath: string,
+  secondaryUserDataPath: string
+) {
+  await Fs.promises.mkdir(secondaryUserDataPath, { recursive: true })
+
+  const entriesToSeed = [
+    'IndexedDB',
+    'Local Storage',
+    'Preferences',
+    'Local State',
+  ]
+
+  for (const entry of entriesToSeed) {
+    const source = Path.join(primaryUserDataPath, entry)
+    const destination = Path.join(secondaryUserDataPath, entry)
+
+    try {
+      await Fs.promises.cp(source, destination, {
+        recursive: true,
+        force: true,
+        errorOnExist: false,
+      })
+    } catch (e) {
+      log.warn(
+        `[startup] unable to seed secondary userData entry '${entry}'`,
+        e
+      )
+    }
+  }
+}
+
+async function pruneOldSecondaryUserData(
+  secondaryUserDataRoot: string,
+  activeSecondaryUserDataPath: string
+) {
+  let entries: ReadonlyArray<Fs.Dirent>
+  try {
+    entries = await Fs.promises.readdir(secondaryUserDataRoot, {
+      withFileTypes: true,
+    })
+  } catch {
+    return
+  }
+
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue
+    }
+
+    const entryPath = Path.join(secondaryUserDataRoot, entry.name)
+    if (entryPath === activeSecondaryUserDataPath) {
+      continue
+    }
+
+    try {
+      const stat = await Fs.promises.stat(entryPath)
+      if (stat.mtimeMs >= cutoff) {
+        continue
+      }
+
+      await Fs.promises.rm(entryPath, { recursive: true, force: true })
+    } catch (e) {
+      log.warn(
+        `[startup] unable to prune old secondary userData '${entryPath}'`,
+        e
+      )
+    }
+  }
+}
+
 let mainWindow: AppWindow | null = null
 const appWindows = new Map<number, AppWindow>()
 
@@ -91,6 +200,7 @@ let readyTime: number | null = null
 let shouldCreateInitialWindow = true
 let appTray: Electron.Tray | null = null
 let didInstallDevTools = false
+let lastTrayMiddleClickLaunchTime = 0
 
 type OnDidLoadFn = (window: AppWindow) => void
 /** See the `onDidLoad` function. */
@@ -132,7 +242,15 @@ function resolveTrayIcon(): Electron.NativeImage | null {
   const candidatePaths = [
     Path.join(__dirname, 'static', 'windows-logo-64x64@2x.png'),
     Path.join(__dirname, '..', 'static', 'windows-logo-64x64@2x.png'),
-    Path.join(process.cwd(), 'dist', 'GitHubDesktop-dev-win32-x64', 'resources', 'app', 'static', 'windows-logo-64x64@2x.png'),
+    Path.join(
+      process.cwd(),
+      'dist',
+      'GitHubDesktop-dev-win32-x64',
+      'resources',
+      'app',
+      'static',
+      'windows-logo-64x64@2x.png'
+    ),
   ]
 
   for (const candidate of candidatePaths) {
@@ -178,7 +296,7 @@ function createAppTray() {
       {
         label: 'New window',
         click: () => {
-          createWindow()
+          launchAdditionalInstanceFromTray()
         },
       },
       {
@@ -193,7 +311,7 @@ function createAppTray() {
     }
     const isMiddleButton = clickEvent.button === 1
     if (isMiddleButton) {
-      launchAdditionalInstanceFromTray()
+      launchAdditionalInstanceFromTrayMiddleClick()
       return
     }
 
@@ -210,9 +328,19 @@ function createAppTray() {
       button?: number
     }
     if (clickEvent.button === 1) {
-      launchAdditionalInstanceFromTray()
+      launchAdditionalInstanceFromTrayMiddleClick()
     }
   })
+}
+
+function launchAdditionalInstanceFromTrayMiddleClick() {
+  const currentTime = Date.now()
+  if (currentTime - lastTrayMiddleClickLaunchTime < 500) {
+    return
+  }
+
+  lastTrayMiddleClickLaunchTime = currentTime
+  launchAdditionalInstanceFromTray()
 }
 
 function launchAdditionalInstanceFromTray() {
@@ -227,16 +355,24 @@ function launchAdditionalInstanceFromTray() {
     return
   }
 
-  const child = spawn(executablePath, ['--secondary-desktop-instance'], {
+  log.info(
+    `[startup] launching secondary current-desktop window: ${executablePath}`
+  )
+
+  const child = spawn(executablePath, [NewWindowOnCurrentDesktopArg], {
     detached: true,
     stdio: 'ignore',
   })
 
   if (child.pid === undefined) {
+    log.warn(
+      '[startup] secondary current-desktop launch did not return a child pid; falling back to in-process window'
+    )
     createWindow({ shouldActivate: false })
     return
   }
 
+  log.info(`[startup] launched secondary process pid=${child.pid}`)
   child.unref()
 }
 
@@ -366,7 +502,10 @@ function handleAppURL(url: string) {
   log.info('Processing protocol url')
   const action = parseAppURL(url)
 
-  if (startupPolicy.registerDevelopmentAuthProtocolOnly && isOAuthAction(action)) {
+  if (
+    startupPolicy.registerDevelopmentAuthProtocolOnly &&
+    isOAuthAction(action)
+  ) {
     void relayOAuthCallbackAction(action)
   }
 
@@ -385,12 +524,14 @@ let isDuplicateInstance = false
 if (
   !handlingSquirrelEvent &&
   startupPolicy.enforceSingleInstance &&
-  !isSecondaryTrayInstance
+  !isNewWindowOnCurrentDesktopLaunch
 ) {
   const gotSingleInstanceLock = app.requestSingleInstanceLock()
   isDuplicateInstance = !gotSingleInstanceLock
+  log.info(`[startup] singleInstanceLock=${gotSingleInstanceLock}`)
 
   app.on('second-instance', async (_event, args, _workingDirectory) => {
+    log.info(`[startup] second-instance argv=${JSON.stringify(args)}`)
     const protocolLaunchWillRelay = await shouldHandleOAuthRelay(args)
     if (protocolLaunchWillRelay) {
       await handleCommandLineArguments(args)
@@ -417,8 +558,13 @@ if (
   })
 
   if (isDuplicateInstance) {
+    log.info('[startup] duplicate normal instance exiting')
     app.quit()
   }
+} else if (isNewWindowOnCurrentDesktopLaunch) {
+  log.info(
+    '[startup] current-desktop new-window launch bypassing single-instance lock'
+  )
 }
 
 if (shellNeedsPatching(process)) {
@@ -468,7 +614,11 @@ function getProtocolURLFromCommandLine(argv: string[]) {
   // `[executable path] --protocol-launcher "%1"`. Note that extra command
   // line arguments might be added by Chromium
   // (https://electronjs.org/docs/api/app#event-second-instance).
-  if (!argv.some(arg => arg === `${protocolLauncherArg}` || arg === '--protocol-launcher')) {
+  if (
+    !argv.some(
+      arg => arg === `${protocolLauncherArg}` || arg === '--protocol-launcher'
+    )
+  ) {
     return null
   }
 
@@ -640,10 +790,9 @@ function handleCLIAction(action: CLIAction) {
  */
 function setAsDefaultProtocolClient(protocol: string) {
   if (__WIN32__) {
-    const executablePath =
-      startupPolicy.registerDevelopmentAuthProtocolOnly
-        ? getDevelopmentBuildExecutablePath() ?? process.execPath
-        : process.execPath
+    const executablePath = startupPolicy.registerDevelopmentAuthProtocolOnly
+      ? getDevelopmentBuildExecutablePath() ?? process.execPath
+      : process.execPath
 
     app.setAsDefaultProtocolClient(protocol, executablePath, [
       protocolLauncherArg,
@@ -710,7 +859,7 @@ function updateWindowsUserTasks() {
   app.setUserTasks([
     {
       program: executablePath,
-      arguments: '',
+      arguments: NewWindowOnCurrentDesktopArg,
       iconPath: executablePath,
       iconIndex: 0,
       title: 'New window',
@@ -726,10 +875,25 @@ if (process.env.GITHUB_DESKTOP_DISABLE_HARDWARE_ACCELERATION) {
   app.disableHardwareAcceleration()
 }
 
-app.on('ready', () => {
+app.on('ready', async () => {
   removeLoadedExtensions()
+  log.info(
+    `[startup] app ready launchMode=${appLaunchMode} userData=${app.getPath(
+      'userData'
+    )}`
+  )
 
-  if (isDuplicateInstance || handlingSquirrelEvent || !shouldCreateInitialWindow) {
+  try {
+    await secondaryUserDataReady
+  } catch (e) {
+    log.error('[startup] unable to prepare secondary userData', e)
+  }
+
+  if (
+    isDuplicateInstance ||
+    handlingSquirrelEvent ||
+    !shouldCreateInitialWindow
+  ) {
     if (!shouldCreateInitialWindow) {
       app.quit()
     }
@@ -738,7 +902,11 @@ app.on('ready', () => {
 
   readyTime = now() - launchTime
 
-  if (startupPolicy.registerProtocolHandlers) {
+  if (isNewWindowOnCurrentDesktopLaunch) {
+    log.info(
+      '[startup] secondary current-desktop window skipping protocol setup'
+    )
+  } else if (startupPolicy.registerProtocolHandlers) {
     possibleProtocols.forEach(protocol => setAsDefaultProtocolClient(protocol))
   } else if (startupPolicy.registerDevelopmentAuthProtocolOnly) {
     setAsDefaultProtocolClient(DevelopmentOAuthCallbackProtocol)
@@ -746,8 +914,10 @@ app.on('ready', () => {
   }
 
   createWindow()
-  if (!isSecondaryTrayInstance) {
+  if (!isNewWindowOnCurrentDesktopLaunch) {
     createAppTray()
+  } else {
+    log.info('[startup] secondary current-desktop window skipping tray setup')
   }
 
   const orderedWebRequest = new OrderedWebRequest(
@@ -1030,6 +1200,13 @@ app.on('ready', () => {
    */
   ipcMain.handle('get-path', async (_, path) => app.getPath(path))
 
+  ipcMain.handle('get-secondary-profile-info', async () => ({
+    launchMode: appLaunchMode,
+    isSecondaryCurrentDesktopWindow: isNewWindowOnCurrentDesktopLaunch,
+    primaryUserDataPath,
+    snapshotPath: secondaryProfileStatePath,
+  }))
+
   /**
    * An event sent by the renderer asking for the app's architecture
    */
@@ -1076,7 +1253,9 @@ app.on('ready', () => {
   )
 
   /** An event sent by the renderer indicating a modal dialog is opened */
-  ipcMain.on('dialog-did-open', event => getWindowFromEvent(event)?.dialogDidOpen())
+  ipcMain.on('dialog-did-open', event =>
+    getWindowFromEvent(event)?.dialogDidOpen()
+  )
 
   /**
    * An event sent by the renderer asking whether the Desktop is in the
@@ -1187,10 +1366,24 @@ app.on(
 )
 
 function createWindow(options: { shouldActivate?: boolean } = {}) {
-  const window = new AppWindow(options.shouldActivate ?? true)
+  const shouldActivate = options.shouldActivate ?? true
+  log.info(
+    `[window] creating window shouldActivate=${shouldActivate} launchMode=${appLaunchMode}`
+  )
+  const window = new AppWindow(shouldActivate)
+  const loadTimeout = setTimeout(() => {
+    log.warn(
+      `[window] window #${window.id} has not reported renderer-ready after 15000ms launchMode=${appLaunchMode}`
+    )
+    if (!window.isVisible()) {
+      window.show(shouldActivate)
+    }
+  }, 15000)
   installDevToolsExtensions()
 
   window.onClosed(() => {
+    clearTimeout(loadTimeout)
+    log.info(`[window] closed window #${window.id}`)
     appWindows.delete(window.id)
 
     if (mainWindow === window) {
@@ -1204,7 +1397,9 @@ function createWindow(options: { shouldActivate?: boolean } = {}) {
   })
 
   window.onDidLoad(() => {
-    window.show(options.shouldActivate ?? true)
+    clearTimeout(loadTimeout)
+    log.info(`[window] did-load window #${window.id}`)
+    window.show(shouldActivate)
     window.sendLaunchTimingStats({
       mainReadyTime: readyTime!,
       loadTime: window.loadTime!,

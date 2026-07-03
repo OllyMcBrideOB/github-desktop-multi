@@ -2350,7 +2350,10 @@ export function getOAuthAuthorizationURL(
   endpoint: string,
   state: string
 ): string {
-  const authorizeURL = new window.URL('/login/oauth/authorize', getHTMLURL(endpoint))
+  const authorizeURL = new window.URL(
+    '/login/oauth/authorize',
+    getHTMLURL(endpoint)
+  )
   authorizeURL.searchParams.set('client_id', ClientID ?? '')
   authorizeURL.searchParams.set('scope', oauthScopes.join(' '))
   authorizeURL.searchParams.set('state', state)

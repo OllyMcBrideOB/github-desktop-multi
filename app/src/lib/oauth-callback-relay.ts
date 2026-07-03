@@ -6,7 +6,8 @@ export interface IOAuthCallbackRelayPayload extends IOAuthAction {
   readonly relayedAt: number
 }
 
-export const OAuthCallbackRelayFileName = 'desktop-dev-oauth-callback-relay.json'
+export const OAuthCallbackRelayFileName =
+  'desktop-dev-oauth-callback-relay.json'
 
 export function isOAuthAction(action: URLActionType): action is IOAuthAction {
   return action.name === 'oauth'

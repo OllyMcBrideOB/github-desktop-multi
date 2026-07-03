@@ -3,7 +3,9 @@ import assert from 'node:assert'
 import {
   DevelopmentOAuthCallbackProtocol,
   DevelopmentOAuthCallbackURL,
+  getAppLaunchMode,
   getStartupPolicy,
+  NewWindowOnCurrentDesktopArg,
   WindowsDevForkAppUserModelId,
 } from '../../../src/main-process/startup-policy'
 
@@ -51,6 +53,20 @@ describe('startup-policy', () => {
 
   it('uses a stable development oauth callback protocol and url', () => {
     assert.equal(DevelopmentOAuthCallbackProtocol, 'x-github-desktop-dev-auth')
-    assert.equal(DevelopmentOAuthCallbackURL, 'x-github-desktop-dev-auth://oauth')
+    assert.equal(
+      DevelopmentOAuthCallbackURL,
+      'x-github-desktop-dev-auth://oauth'
+    )
+  })
+
+  it('classifies normal launches by default', () => {
+    assert.equal(getAppLaunchMode(['GitHubDesktop-dev.exe']), 'normal')
+  })
+
+  it('classifies current-desktop new-window launches', () => {
+    assert.equal(
+      getAppLaunchMode(['GitHubDesktop-dev.exe', NewWindowOnCurrentDesktopArg]),
+      'new-window-on-current-desktop'
+    )
   })
 })

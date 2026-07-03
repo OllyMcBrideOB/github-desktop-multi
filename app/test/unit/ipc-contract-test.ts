@@ -74,6 +74,7 @@ describe('IPC channel contract', () => {
 
   const expectedResponseChannels = [
     'get-path',
+    'get-secondary-profile-info',
     'get-app-architecture',
     'get-app-path',
     'get-exec-path',

@@ -389,10 +389,7 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
     }
   }
 
-  public async resolveOAuthRequest(
-    action: IOAuthAction,
-    allowRelay = true
-  ) {
+  public async resolveOAuthRequest(action: IOAuthAction, allowRelay = true) {
     if (!this.state || this.state.kind !== SignInStep.Authentication) {
       return
     }

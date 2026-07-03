@@ -17,6 +17,14 @@ import { DesktopNotificationPermission } from 'desktop-notifications'
 import { NotificationCallback } from 'desktop-notifications'
 import { DesktopAliveEvent } from './stores/alive-store'
 import { CLIAction } from './cli-action'
+import { AppLaunchMode } from '../main-process/startup-policy'
+
+export interface ISecondaryProfileInfo {
+  readonly launchMode: AppLaunchMode
+  readonly isSecondaryCurrentDesktopWindow: boolean
+  readonly primaryUserDataPath: string
+  readonly snapshotPath: string
+}
 
 /**
  * Defines the simplex IPC channel names we use from the renderer
@@ -100,6 +108,7 @@ export type RequestChannels = {
  */
 export type RequestResponseChannels = {
   'get-path': (path: PathType) => Promise<string>
+  'get-secondary-profile-info': () => Promise<ISecondaryProfileInfo>
   'get-app-architecture': () => Promise<Architecture>
   'get-app-path': () => Promise<string>
   'get-exec-path': () => Promise<string>
