@@ -86,6 +86,7 @@ import {
   createSecondaryProfileStateSnapshot,
   ISecondaryProfileState,
 } from '../lib/secondary-profile-state'
+import { getOAuthCallbackRelayPath } from '../lib/oauth-callback-relay'
 
 if (__DEV__) {
   installDevGlobals()
@@ -139,8 +140,11 @@ async function hydrateSecondaryProfileState() {
   }
 }
 
-async function writeSecondaryProfileStateSnapshot() {
-  if (secondaryProfileInfo.isSecondaryCurrentDesktopWindow) {
+async function writeSecondaryProfileStateSnapshot(allowSecondaryWrite = false) {
+  if (
+    secondaryProfileInfo.isSecondaryCurrentDesktopWindow &&
+    !allowSecondaryWrite
+  ) {
     return
   }
 
@@ -318,12 +322,27 @@ const statsStore = new StatsStore(
   new UiActivityMonitor()
 )
 
+let shouldPublishSecondaryAuthentication = false
 const accountsStore = new AccountsStore(localStorage, TokenStore)
 accountsStore.onDidUpdate(() => {
-  void writeSecondaryProfileStateSnapshot()
+  if (
+    !secondaryProfileInfo.isSecondaryCurrentDesktopWindow ||
+    shouldPublishSecondaryAuthentication
+  ) {
+    void writeSecondaryProfileStateSnapshot(
+      shouldPublishSecondaryAuthentication
+    )
+    shouldPublishSecondaryAuthentication = false
+  }
 })
 
-const signInStore = new SignInStore(accountsStore)
+const signInStore = new SignInStore(
+  accountsStore,
+  getOAuthCallbackRelayPath(secondaryProfileInfo.primaryUserDataPath)
+)
+signInStore.onDidAuthenticate(() => {
+  shouldPublishSecondaryAuthentication = true
+})
 
 trampolineServer.registerCommandHandler(
   TrampolineCommandIdentifier.AskPass,

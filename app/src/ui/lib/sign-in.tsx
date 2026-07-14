@@ -39,7 +39,7 @@ export class SignIn extends React.Component<ISignInProps, {}> {
           You're already signed in to{' '}
           <Ref>{new URL(getHTMLURL(state.endpoint)).host}</Ref> with the account{' '}
           <Ref>{state.existingAccount.login}</Ref>. If you continue, you will
-          first be signed out.
+          stay signed in until the replacement sign-in succeeds.
         </p>
         {this.renderAuthenticationStep(state)}
       </>

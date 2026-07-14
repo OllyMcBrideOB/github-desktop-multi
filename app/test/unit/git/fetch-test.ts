@@ -1,15 +1,25 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert'
 import { Repository } from '../../../src/models/repository'
-import { setupFixtureRepository } from '../../helpers/repositories'
+import {
+  setupEmptyRepository,
+  setupFixtureRepository,
+} from '../../helpers/repositories'
 import {
   getBranches,
   getBranchesDifferingFromUpstream,
 } from '../../../src/lib/git/for-each-ref'
 import { Branch } from '../../../src/models/branch'
-import { fastForwardBranches, getCodexRefsFromText } from '../../../src/lib/git'
+import {
+  fastForwardBranches,
+  getFetchArgs,
+  getCodexRefsFromText,
+  getMissingObjectIds,
+  parseCodexRefs,
+  pruneBrokenCodexRefs,
+} from '../../../src/lib/git'
 import * as Path from 'path'
-import { readFile } from 'fs/promises'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 
 function branchWithName(branches: ReadonlyArray<Branch>, name: string) {
   return branches.filter(branch => branch.name === name)[0]
@@ -34,6 +44,48 @@ error: https://github.com/Open-Bionics/OB2_FW_Common.git did not send all necess
       const refs = getCodexRefsFromText('fatal: bad object refs/heads/main')
 
       assert.equal(refs.size, 0)
+    })
+  })
+
+  describe('pruneBrokenCodexRefs', () => {
+    it('excludes Codex refs from fetch negotiation', async () => {
+      const args = await getFetchArgs('origin')
+
+      assert.ok(args.includes('--negotiation-tip=refs/heads/*'))
+      assert.ok(args.includes('--negotiation-tip=refs/remotes/origin/*'))
+      assert.ok(args.includes('gc.auto=0'))
+    })
+
+    it('identifies missing objects from batch-check output', () => {
+      assert.deepEqual(
+        [...getMissingObjectIds('abc commit\ndef missing\n')],
+        ['def']
+      )
+    })
+
+    it('parses only Codex refs', () => {
+      assert.deepEqual(
+        parseCodexRefs('refs/codex/checkpoints/one abc\nrefs/heads/main def\n'),
+        [{ name: 'refs/codex/checkpoints/one', objectId: 'abc' }]
+      )
+    })
+
+    it('removes a Codex ref whose object is missing', async t => {
+      const repository = await setupEmptyRepository(t)
+      const refPath = Path.join(
+        repository.path,
+        '.git',
+        'refs',
+        'codex',
+        'turn-diffs',
+        'checkpoints',
+        'broken'
+      )
+      await mkdir(Path.dirname(refPath), { recursive: true })
+      await writeFile(refPath, '0000000000000000000000000000000000000001\n')
+
+      assert.equal(await pruneBrokenCodexRefs(repository), 1)
+      assert.equal(await pruneBrokenCodexRefs(repository), 0)
     })
   })
 

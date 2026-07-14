@@ -166,7 +166,10 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
   private oauthCallbackRelayPath: string | null = null
   private lastProcessedRelayId: string | null = null
 
-  public constructor(private readonly accountStore: AccountsStore) {
+  public constructor(
+    private readonly accountStore: AccountsStore,
+    private readonly sharedOAuthCallbackRelayPath?: string
+  ) {
     super()
 
     this.accountStore.getAll().then(accounts => {
@@ -284,15 +287,6 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
 
     this.setState({ ...currentState, loading: true })
 
-    if (currentState.kind === SignInStep.ExistingAccountWarning) {
-      const { existingAccount } = currentState
-      // Try to avoid emitting an error out of AccountsStore if the account
-      // is already gone.
-      if (this.accounts.find(x => x.endpoint === existingAccount.endpoint)) {
-        await this.accountStore.removeAccount(existingAccount)
-      }
-    }
-
     const csrfToken = crypto.randomUUID()
 
     new Promise<Account>((resolve, reject) => {
@@ -343,8 +337,9 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
 
   private async initializeOAuthCallbackRelayWatcher() {
     try {
-      const userDataPath = await getPath('userData')
-      this.oauthCallbackRelayPath = getOAuthCallbackRelayPath(userDataPath)
+      this.oauthCallbackRelayPath =
+        this.sharedOAuthCallbackRelayPath ??
+        getOAuthCallbackRelayPath(await getPath('userData'))
 
       Fs.watchFile(this.oauthCallbackRelayPath, { interval: 500 }, () => {
         void this.consumeRelayedOAuthRequest()

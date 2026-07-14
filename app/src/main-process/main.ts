@@ -198,6 +198,7 @@ const launchTime = now()
 let preventQuit = false
 let readyTime: number | null = null
 let shouldCreateInitialWindow = true
+let initialCommandLineArguments = Promise.resolve()
 let appTray: Electron.Tray | null = null
 let didInstallDevTools = false
 let lastTrayMiddleClickLaunchTime = 0
@@ -493,7 +494,7 @@ if (__WIN32__ && process.argv.length > 1) {
 }
 
 if (!handlingSquirrelEvent) {
-  void handleCommandLineArguments(process.argv)
+  initialCommandLineArguments = handleCommandLineArguments(process.argv)
 }
 
 initializeDesktopNotifications()
@@ -836,7 +837,10 @@ async function relayOAuthCallbackAction(
   }
 
   try {
-    const relayPath = getOAuthCallbackRelayPath(app.getPath('userData'))
+    // All secondary windows have isolated Chromium profiles, but OAuth is an
+    // app-level concern. Relay through the stable primary profile so whichever
+    // window initiated the matching state can consume the callback.
+    const relayPath = getOAuthCallbackRelayPath(primaryUserDataPath)
     const payload = createOAuthCallbackRelayPayload(action)
     await Fs.promises.writeFile(relayPath, JSON.stringify(payload), 'utf8')
     return true
@@ -887,6 +891,15 @@ app.on('ready', async () => {
     await secondaryUserDataReady
   } catch (e) {
     log.error('[startup] unable to prepare secondary userData', e)
+  }
+
+  try {
+    // A protocol-only invocation must finish writing its callback before the
+    // ready path decides whether to create a window or quit. Without this wait,
+    // app readiness can win the race and flash a new, unauthenticated window.
+    await initialCommandLineArguments
+  } catch (e) {
+    log.error('[startup] failed to process initial command line', e)
   }
 
   if (

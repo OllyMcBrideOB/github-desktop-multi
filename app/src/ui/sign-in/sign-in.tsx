@@ -90,9 +90,7 @@ export class SignIn extends React.Component<ISignInProps, ISignInState> {
         this.props.dispatcher.setSignInEndpoint(this.state.endpoint)
         break
       case SignInStep.ExistingAccountWarning:
-        this.props.dispatcher
-          .removeAccount(state.existingAccount)
-          .then(() => this.props.dispatcher.setSignInEndpoint(state.endpoint))
+        this.props.dispatcher.requestBrowserAuthentication()
         break
       case SignInStep.Authentication:
         this.props.dispatcher.requestBrowserAuthentication()
