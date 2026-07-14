@@ -17,6 +17,8 @@ import {
   getMissingObjectIds,
   parseCodexRefs,
   pruneBrokenCodexRefs,
+  gitRemoteOperationConfigArguments,
+  getFastForwardRefPairs,
 } from '../../../src/lib/git'
 import * as Path from 'path'
 import { mkdir, readFile, writeFile } from 'fs/promises'
@@ -48,12 +50,16 @@ error: https://github.com/Open-Bionics/OB2_FW_Common.git did not send all necess
   })
 
   describe('pruneBrokenCodexRefs', () => {
-    it('excludes Codex refs from fetch negotiation', async () => {
+    it('hides Codex refs from fetch connectivity checks', async () => {
       const args = await getFetchArgs('origin')
 
-      assert.ok(args.includes('--negotiation-tip=refs/heads/*'))
-      assert.ok(args.includes('--negotiation-tip=refs/remotes/origin/*'))
+      assert.ok(args.includes('transfer.hideRefs=refs/codex'))
       assert.ok(args.includes('gc.auto=0'))
+      assert.ok(args.includes('maintenance.auto=false'))
+      assert.deepEqual(
+        args.slice(0, gitRemoteOperationConfigArguments.length),
+        gitRemoteOperationConfigArguments
+      )
     })
 
     it('identifies missing objects from batch-check output', () => {
@@ -90,6 +96,33 @@ error: https://github.com/Open-Bionics/OB2_FW_Common.git did not send all necess
   })
 
   describe('fastForwardBranches', () => {
+    it('does not update branches checked out in any worktree', () => {
+      const branch = {
+        ref: 'refs/heads/feature',
+        sha: 'a',
+        upstreamRef: 'refs/remotes/origin/feature',
+        upstreamSha: 'b',
+      }
+
+      assert.deepEqual(
+        getFastForwardRefPairs(
+          [branch],
+          [
+            {
+              path: 'C:\\repo-worktree',
+              head: branch.sha,
+              branch: branch.ref,
+              isDetached: false,
+              type: 'linked',
+              isLocked: false,
+              isPrunable: false,
+            },
+          ]
+        ),
+        []
+      )
+    })
+
     it('fast-forwards branches using fetch', async t => {
       const testRepoPath = await setupFixtureRepository(
         t,

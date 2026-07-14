@@ -5,6 +5,7 @@ import { PushProgressParser, executionOptionsWithProgress } from '../progress'
 import { IRemote } from '../../models/remote'
 import { envForRemoteOperation } from './environment'
 import { Branch } from '../../models/branch'
+import { gitRemoteOperationConfigArguments } from './remote-operation'
 
 export type PushOptions = {
   /**
@@ -55,6 +56,7 @@ export async function push(
   progressCallback?: (progress: IPushProgress) => void
 ): Promise<void> {
   const args = [
+    ...gitRemoteOperationConfigArguments,
     'push',
     remote.name,
     remoteBranch ? `${localBranch}:${remoteBranch}` : localBranch,

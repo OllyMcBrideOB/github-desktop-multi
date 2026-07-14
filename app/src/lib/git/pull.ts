@@ -12,6 +12,7 @@ import { PullProgressParser, executionOptionsWithProgress } from '../progress'
 import { IRemote } from '../../models/remote'
 import { envForRemoteOperation } from './environment'
 import { getConfigValue } from './config'
+import { gitRemoteOperationConfigArguments } from './remote-operation'
 
 /**
  * Pull from the specified remote.
@@ -94,6 +95,7 @@ export async function pull(
   }
 
   const args = [
+    ...gitRemoteOperationConfigArguments,
     ...gitRebaseArguments(),
     'pull',
     ...(await getDefaultPullDivergentBranchArguments(repository)),

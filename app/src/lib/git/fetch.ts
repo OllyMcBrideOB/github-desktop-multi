@@ -6,6 +6,9 @@ import { IRemote } from '../../models/remote'
 import { ITrackingBranch } from '../../models/branch'
 import { envForRemoteOperation } from './environment'
 import { coerceToString } from './coerce-to-string'
+import { gitRemoteOperationConfigArguments } from './remote-operation'
+import { listWorktrees } from './worktree'
+import type { WorktreeEntry } from '../../models/worktree'
 
 const codexRefRe = /\brefs\/codex\/[^\s'"`<>]+/g
 
@@ -102,20 +105,11 @@ export async function getFetchArgs(
   progressCallback?: (progress: IFetchProgress) => void
 ) {
   return [
-    // A broken ephemeral Codex ref must not make an otherwise successful fetch
-    // fail in the automatic maintenance phase. Other Git invocations can still
-    // run repository maintenance normally.
-    '-c',
-    'gc.auto=0',
+    ...gitRemoteOperationConfigArguments,
     'fetch',
     ...(progressCallback ? ['--progress'] : []),
     '--prune',
     '--recurse-submodules=on-demand',
-    // Git normally negotiates from every local ref. Codex checkpoints are
-    // transient and may be deleted concurrently, so restrict negotiation to
-    // durable branch refs and keep refs/codex out of fetch entirely.
-    '--negotiation-tip=refs/heads/*',
-    `--negotiation-tip=refs/remotes/${remote}/*`,
     remote,
   ]
 }
@@ -188,38 +182,26 @@ export async function fetch(
 
   await pruneBrokenCodexRefs(repository)
 
-  const maxAttempts = 3
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await git(args, repository.path, 'fetch', opts)
-      return
-    } catch (e) {
-      if (!(e instanceof GitError)) {
-        throw e
-      }
-
-      const codexRefs = getCodexRefsFromFetchError(e)
-      if (codexRefs.size === 0) {
-        throw e
-      }
-
-      const prunedRefCount = await pruneBrokenCodexRefs(repository)
-      if (attempt < maxAttempts) {
-        log.warn(
-          `Fetch attempt ${attempt} encountered ${codexRefs.size} transient Codex refs; pruned ${prunedRefCount} broken refs and retrying`
-        )
-        continue
-      }
-
-      // The remote transfer may have succeeded even though a concurrently
-      // changing Codex checkpoint made Git's final connectivity check fail.
-      // Do not surface ephemeral Codex bookkeeping as a fatal repository error;
-      // the next scheduled fetch will reconcile any remote ref still pending.
-      log.warn(
-        `Ignoring fetch failure after ${maxAttempts} attempts because it only referenced transient Codex checkpoint refs`
-      )
-      return
+  try {
+    await git(args, repository.path, 'fetch', opts)
+  } catch (e) {
+    if (!(e instanceof GitError)) {
+      throw e
     }
+
+    const codexRefs = getCodexRefsFromFetchError(e)
+    if (codexRefs.size === 0) {
+      throw e
+    }
+
+    const prunedRefCount = await pruneBrokenCodexRefs(repository)
+    log.warn(
+      `Fetch encountered ${codexRefs.size} Codex refs; pruned ${prunedRefCount} broken refs and retrying once`
+    )
+
+    // Never report success unless Git reports success. This ensures FETCH_HEAD,
+    // remote-tracking refs, and the UI's last-fetched timestamp stay truthful.
+    await git(args, repository.path, 'fetch', opts)
   }
 }
 
@@ -229,10 +211,30 @@ export async function fetchRefspec(
   remote: IRemote,
   refspec: string
 ): Promise<void> {
-  await git(['fetch', remote.name, refspec], repository.path, 'fetchRefspec', {
-    successExitCodes: new Set([0, 128]),
-    env: await envForRemoteOperation(remote.url),
-  })
+  await git(
+    [...gitRemoteOperationConfigArguments, 'fetch', remote.name, refspec],
+    repository.path,
+    'fetchRefspec',
+    {
+      successExitCodes: new Set([0, 128]),
+      env: await envForRemoteOperation(remote.url),
+    }
+  )
+}
+
+export function getFastForwardRefPairs(
+  branches: ReadonlyArray<ITrackingBranch>,
+  worktrees: ReadonlyArray<WorktreeEntry>
+): ReadonlyArray<string> {
+  const checkedOutBranches = new Set(
+    worktrees
+      .map(worktree => worktree.branch)
+      .filter((branch): branch is string => branch !== null)
+  )
+
+  return branches
+    .filter(branch => !checkedOutBranches.has(branch.ref))
+    .map(branch => `${branch.upstreamRef}:${branch.ref}`)
 }
 
 export async function fastForwardBranches(
@@ -243,10 +245,18 @@ export async function fastForwardBranches(
     return
   }
 
-  const refPairs = branches.map(branch => `${branch.upstreamRef}:${branch.ref}`)
+  const refPairs = getFastForwardRefPairs(
+    branches,
+    await listWorktrees(repository)
+  )
+
+  if (refPairs.length === 0) {
+    return
+  }
 
   await git(
     [
+      ...gitRemoteOperationConfigArguments,
       'fetch',
       '.',
       // Make sure we don't try to update branches that can't be fast-forwarded

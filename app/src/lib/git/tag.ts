@@ -2,6 +2,7 @@ import { git } from './core'
 import { Repository } from '../../models/repository'
 import { IRemote } from '../../models/remote'
 import { envForRemoteOperation } from './environment'
+import { gitRemoteOperationConfigArguments } from './remote-operation'
 
 /**
  * Create a new tag on the given target commit.
@@ -89,6 +90,7 @@ export async function fetchTagsToPush(
   branchName: string
 ): Promise<ReadonlyArray<string>> {
   const args = [
+    ...gitRemoteOperationConfigArguments,
     'push',
     remote.name,
     branchName,
