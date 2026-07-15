@@ -17,6 +17,15 @@ import { kStringMaxLength } from 'buffer'
 import { withHooksEnv } from '../hooks/with-hooks-env'
 import { coerceToString } from './coerce-to-string'
 import { pushTerminalChunk } from './push-terminal-chunk'
+import pLimit from 'p-limit'
+
+/**
+ * A single Git command can spawn additional helpers (remote transports,
+ * credential helpers, and submodule processes). Keep top-level concurrency
+ * bounded so repository refresh bursts cannot overwhelm the machine.
+ */
+const MaxConcurrentGitOperations = 4
+const limitGitOperations = pLimit(MaxConcurrentGitOperations)
 
 export const isMaxBufferExceededError = (
   error: unknown
@@ -279,20 +288,22 @@ export async function git(
         async env => {
           const commandName = `${name}: git ${args.join(' ')}`
 
-          const result = await GitPerf.measure(commandName, () =>
-            exec(args, path, {
-              ...opts,
-              env: {
-                // Explicitly set TERM to 'dumb' so that if Desktop was launched
-                // from a terminal or if the system environment variables
-                // have TERM set Git won't consider us as a smart terminal.
-                // See https://github.com/git/git/blob/a7312d1a2/editor.c#L11-L15
-                TERM: 'dumb',
-                ...opts.env,
-                ...hooksEnv,
-                ...env,
-              },
-            })
+          const result = await limitGitOperations(() =>
+            GitPerf.measure(commandName, () =>
+              exec(args, path, {
+                ...opts,
+                env: {
+                  // Explicitly set TERM to 'dumb' so that if Desktop was launched
+                  // from a terminal or if the system environment variables
+                  // have TERM set Git won't consider us as a smart terminal.
+                  // See https://github.com/git/git/blob/a7312d1a2/editor.c#L11-L15
+                  TERM: 'dumb',
+                  ...opts.env,
+                  ...hooksEnv,
+                  ...env,
+                },
+              })
+            )
           ).catch(err => {
             // If this is an exception thrown by Node.js (as opposed to
             // dugite) let's keep the salient details but include the name of

@@ -404,7 +404,8 @@ const appStore = new AppStore(
   repositoryStateManager,
   apiRepositoriesStore,
   notificationsStore,
-  copilotStore
+  copilotStore,
+  !secondaryProfileInfo.isSecondaryCurrentDesktopWindow
 )
 
 appStore.onDidUpdate(state => {

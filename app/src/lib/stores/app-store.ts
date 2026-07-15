@@ -732,7 +732,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
     private readonly repositoryStateCache: RepositoryStateCache,
     private readonly apiRepositoriesStore: ApiRepositoriesStore,
     private readonly notificationsStore: NotificationsStore,
-    private readonly copilotStore: CopilotStore
+    private readonly copilotStore: CopilotStore,
+    private readonly enableBackgroundOperations = true
   ) {
     super()
 
@@ -788,11 +789,17 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.refreshIndicatorForRepository
     )
 
-    window.setTimeout(() => {
-      if (this.repositoryIndicatorsEnabled) {
-        this.repositoryIndicatorUpdater.start()
-      }
-    }, InitialRepositoryIndicatorTimeout)
+    if (this.enableBackgroundOperations) {
+      window.setTimeout(() => {
+        if (this.repositoryIndicatorsEnabled) {
+          this.repositoryIndicatorUpdater.start()
+        }
+      }, InitialRepositoryIndicatorTimeout)
+    } else {
+      log.info(
+        '[AppStore] Background Git operations disabled for secondary window process'
+      )
+    }
 
     API.onTokenInvalidated(this.onTokenInvalidated)
 
@@ -2187,6 +2194,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
   }
 
   private startBackgroundPruner(repository: Repository) {
+    if (!this.enableBackgroundOperations) {
+      return
+    }
+
     if (this.currentBranchPruner !== null) {
       fatalError(
         `A branch pruner is already active and cannot start updating on ${repository.name}`
@@ -2311,6 +2322,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
     repository: Repository,
     withInitialSkew: boolean
   ) {
+    if (!this.enableBackgroundOperations) {
+      return
+    }
+
     if (this.currentBackgroundFetcher) {
       fatalError(
         `We should only have on background fetcher active at once, but we're trying to start background fetching on ${repository.name} while another background fetcher is still active!`
@@ -4109,7 +4124,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     setBoolean(repositoryIndicatorsEnabledKey, repositoryIndicatorsEnabled)
     this.repositoryIndicatorsEnabled = repositoryIndicatorsEnabled
-    if (repositoryIndicatorsEnabled) {
+    if (repositoryIndicatorsEnabled && this.enableBackgroundOperations) {
       this.repositoryIndicatorUpdater.start()
     } else {
       this.repositoryIndicatorUpdater.stop()
@@ -4297,7 +4312,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
     // started to refresh the repository indicators let's do so.
     if (
       foldout.type === FoldoutType.Repository &&
-      this.repositoryIndicatorsEnabled
+      this.repositoryIndicatorsEnabled &&
+      this.enableBackgroundOperations
     ) {
       // N.B: RepositoryIndicatorUpdater.prototype.start is
       // idempotent.
@@ -7705,7 +7721,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     if (this.appIsFocused) {
-      this.repositoryIndicatorUpdater.resume()
+      if (this.enableBackgroundOperations) {
+        this.repositoryIndicatorUpdater.resume()
+      }
       if (this.selectedRepository instanceof Repository) {
         this.startPullRequestUpdater(this.selectedRepository)
         // if we're in the tutorial and we don't have an editor yet, check for one!
@@ -7714,7 +7732,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
         }
       }
     } else {
-      this.repositoryIndicatorUpdater.pause()
+      if (this.enableBackgroundOperations) {
+        this.repositoryIndicatorUpdater.pause()
+      }
       this.stopPullRequestUpdater()
     }
   }
