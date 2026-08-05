@@ -86,6 +86,10 @@ import {
   createSecondaryProfileStateSnapshot,
   ISecondaryProfileState,
 } from '../lib/secondary-profile-state'
+import {
+  SharedRepositories,
+  SharedRepositoriesFileName,
+} from '../lib/shared-repositories'
 import { getOAuthCallbackRelayPath } from '../lib/oauth-callback-relay'
 
 if (__DEV__) {
@@ -355,8 +359,15 @@ trampolineServer.registerCommandHandler(
 )
 
 const repositoriesStore = new RepositoriesStore(
-  new RepositoriesDatabase('Database')
+  new RepositoriesDatabase('Database'),
+  new SharedRepositories(
+    Path.join(
+      secondaryProfileInfo.primaryUserDataPath,
+      SharedRepositoriesFileName
+    )
+  )
 )
+await repositoriesStore.initializeSharedRepositories()
 
 const pullRequestStore = new PullRequestStore(
   new PullRequestDatabase('PullRequestDatabase'),

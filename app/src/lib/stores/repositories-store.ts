@@ -28,6 +28,7 @@ import { WorkflowPreferences } from '../../models/workflow-preferences'
 import { clearTagsToPush } from './helpers/tags-to-push-storage'
 import { IMatchedGitHubRepository } from '../repository-matching'
 import { shallowEquals } from '../equality'
+import { SharedRepositories } from '../shared-repositories'
 
 type AddRepositoryOptions = {
   missing?: boolean
@@ -54,8 +55,57 @@ export class RepositoriesStore extends TypedBaseStore<
 
   private emitQueued = false
 
-  public constructor(private readonly db: RepositoriesDatabase) {
+  public constructor(
+    private readonly db: RepositoriesDatabase,
+    private readonly sharedRepositories?: SharedRepositories
+  ) {
     super()
+  }
+
+  public async initializeSharedRepositories(): Promise<void> {
+    if (this.sharedRepositories === undefined) {
+      return
+    }
+
+    try {
+      const localRepositories = await this.db.repositories.toArray()
+      await this.sharedRepositories.initialize(localRepositories)
+      const sharedRepositories = await this.sharedRepositories.getAll()
+
+      await this.db.transaction('rw', this.db.repositories, async () => {
+        for (const shared of sharedRepositories) {
+          const existing = await this.db.repositories.get({
+            path: shared.path,
+          })
+          if (shared.present && existing === undefined) {
+            await this.db.repositories.add({
+              path: shared.path,
+              gitDir: shared.gitDir,
+              gitHubRepositoryID: null,
+              missing: false,
+              lastStashCheckDate: null,
+              alias: null,
+            })
+          } else if (
+            !shared.present &&
+            existing !== undefined &&
+            existing.id !== undefined
+          ) {
+            await this.db.repositories.delete(existing.id)
+          }
+        }
+      })
+    } catch (e) {
+      log.error('Unable to initialize shared repository state', e)
+    }
+  }
+
+  private async syncSharedRepository(operation: () => Promise<void>) {
+    try {
+      await operation()
+    } catch (e) {
+      log.error('Unable to update shared repository state', e)
+    }
   }
 
   /**
@@ -225,6 +275,11 @@ export class RepositoriesStore extends TypedBaseStore<
       }
     )
 
+    await this.syncSharedRepository(
+      () =>
+        this.sharedRepositories?.setPresent(path, gitDir) ?? Promise.resolve()
+    )
+
     this.emitUpdatedRepositories()
   }
 
@@ -263,6 +318,11 @@ export class RepositoriesStore extends TypedBaseStore<
       }
     )
 
+    await this.syncSharedRepository(
+      () =>
+        this.sharedRepositories?.setPresent(path, gitDir) ?? Promise.resolve()
+    )
+
     this.emitUpdatedRepositories()
 
     return repository
@@ -271,6 +331,11 @@ export class RepositoriesStore extends TypedBaseStore<
   /** Remove the given repository. */
   public async removeRepository(repository: Repository): Promise<void> {
     await this.db.repositories.delete(repository.id)
+    await this.syncSharedRepository(
+      () =>
+        this.sharedRepositories?.setRemoved(repository.path) ??
+        Promise.resolve()
+    )
     clearTagsToPush(repository)
 
     this.emitUpdatedRepositories()
@@ -303,6 +368,11 @@ export class RepositoriesStore extends TypedBaseStore<
     gitDir: string
   ): Promise<Repository> {
     await this.db.repositories.update(repository.id, { gitDir })
+    await this.syncSharedRepository(
+      () =>
+        this.sharedRepositories?.setPresent(repository.path, gitDir) ??
+        Promise.resolve()
+    )
 
     this.emitUpdatedRepositories()
 
@@ -360,6 +430,11 @@ export class RepositoriesStore extends TypedBaseStore<
       path,
       gitDir,
     })
+    await this.syncSharedRepository(
+      () =>
+        this.sharedRepositories?.move(repository.path, path, gitDir) ??
+        Promise.resolve()
+    )
 
     this.emitUpdatedRepositories()
 
@@ -403,6 +478,11 @@ export class RepositoriesStore extends TypedBaseStore<
       path: worktreePath,
       missing,
     })
+    await this.syncSharedRepository(
+      () =>
+        this.sharedRepositories?.move(repository.path, worktreePath) ??
+        Promise.resolve()
+    )
 
     this.emitUpdatedRepositories()
 

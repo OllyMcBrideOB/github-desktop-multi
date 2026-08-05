@@ -106,10 +106,7 @@ async function configureSecondaryUserDataForLaunch() {
     primaryUserDataPath,
     'secondary-current-desktop'
   )
-  const secondaryUserDataPath = Path.join(
-    secondaryUserDataRoot,
-    `${Date.now()}-${process.pid}`
-  )
+  const secondaryUserDataPath = acquireSecondaryProfile(secondaryUserDataRoot)
 
   app.setPath('userData', secondaryUserDataPath)
 
@@ -117,11 +114,80 @@ async function configureSecondaryUserDataForLaunch() {
   await pruneOldSecondaryUserData(secondaryUserDataRoot, secondaryUserDataPath)
 }
 
+function acquireSecondaryProfile(secondaryUserDataRoot: string) {
+  // Electron requires userData to be selected synchronously before app ready.
+  // eslint-disable-next-line no-sync
+  Fs.mkdirSync(secondaryUserDataRoot, { recursive: true })
+
+  for (let slot = 1; slot <= 32; slot++) {
+    const profilePath = Path.join(secondaryUserDataRoot, `profile-${slot}`)
+    const lockPath = Path.join(profilePath, '.instance-lock')
+    // eslint-disable-next-line no-sync
+    Fs.mkdirSync(profilePath, { recursive: true })
+
+    try {
+      // eslint-disable-next-line no-sync
+      const fd = Fs.openSync(lockPath, 'wx')
+      // eslint-disable-next-line no-sync
+      Fs.writeFileSync(fd, `${process.pid}\n`)
+      // eslint-disable-next-line no-sync
+      Fs.closeSync(fd)
+      log.info(`[startup] acquired persistent secondary profile-${slot}`)
+      return profilePath
+    } catch (e) {
+      if (!isNodeError(e) || e.code !== 'EEXIST') {
+        throw e
+      }
+
+      if (removeStaleSecondaryProfileLock(lockPath)) {
+        slot--
+      }
+    }
+  }
+
+  throw new Error('Unable to allocate a persistent secondary profile')
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error
+}
+
+function removeStaleSecondaryProfileLock(lockPath: string) {
+  try {
+    // eslint-disable-next-line no-sync
+    const pid = Number.parseInt(Fs.readFileSync(lockPath, 'utf8'), 10)
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0)
+        return false
+      } catch (e) {
+        if (isNodeError(e) && e.code !== 'ESRCH') {
+          return false
+        }
+      }
+    }
+
+    // eslint-disable-next-line no-sync
+    Fs.unlinkSync(lockPath)
+    return true
+  } catch (e) {
+    return isNodeError(e) && e.code === 'ENOENT'
+  }
+}
+
 async function seedSecondaryUserData(
   primaryUserDataPath: string,
   secondaryUserDataPath: string
 ) {
   await Fs.promises.mkdir(secondaryUserDataPath, { recursive: true })
+
+  const initializedMarker = Path.join(secondaryUserDataPath, '.initialized')
+  try {
+    await Fs.promises.access(initializedMarker)
+    return
+  } catch {
+    // A new persistent profile is seeded once from the primary profile.
+  }
 
   const entriesToSeed = [
     'IndexedDB',
@@ -147,6 +213,8 @@ async function seedSecondaryUserData(
       )
     }
   }
+
+  await Fs.promises.writeFile(initializedMarker, '1\n', 'utf8')
 }
 
 async function pruneOldSecondaryUserData(
@@ -165,7 +233,7 @@ async function pruneOldSecondaryUserData(
   const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) {
+    if (!entry.isDirectory() || !/^\d+-\d+$/.test(entry.name)) {
       continue
     }
 
